@@ -17,3 +17,8 @@ rev = "798466d"
 
 [patch.crates-io]
 rustls = { git = "https://github.com/hapsoc/rustls", rev = "ea3b1a6" }
+
+[dev-dependencies]
+rcgen = "0.9.4"
+tokio = { version = "1.21.2", features = ["full"] }
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }

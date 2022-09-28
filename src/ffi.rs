@@ -86,6 +86,32 @@ pub enum CryptoInfo {
     Sm4Ccm(ktls::tls12_crypto_info_sm4_ccm),
 }
 
+impl CryptoInfo {
+    fn as_ptr(&self) -> *const libc::c_void {
+        match self {
+            CryptoInfo::AesGcm128(info) => info as *const _ as *const libc::c_void,
+            CryptoInfo::AesGcm256(info) => info as *const _ as *const libc::c_void,
+            CryptoInfo::AesCcm128(info) => info as *const _ as *const libc::c_void,
+            CryptoInfo::Chacha20Poly1305(info) => info as *const _ as *const libc::c_void,
+            CryptoInfo::Sm4Gcm(info) => info as *const _ as *const libc::c_void,
+            CryptoInfo::Sm4Ccm(info) => info as *const _ as *const libc::c_void,
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            CryptoInfo::AesGcm128(_) => std::mem::size_of::<ktls::tls12_crypto_info_aes_gcm_128>(),
+            CryptoInfo::AesGcm256(_) => std::mem::size_of::<ktls::tls12_crypto_info_aes_gcm_256>(),
+            CryptoInfo::AesCcm128(_) => std::mem::size_of::<ktls::tls12_crypto_info_aes_ccm_128>(),
+            CryptoInfo::Chacha20Poly1305(_) => {
+                std::mem::size_of::<ktls::tls12_crypto_info_chacha20_poly1305>()
+            }
+            CryptoInfo::Sm4Gcm(_) => std::mem::size_of::<ktls::tls12_crypto_info_sm4_gcm>(),
+            CryptoInfo::Sm4Ccm(_) => std::mem::size_of::<ktls::tls12_crypto_info_sm4_ccm>(),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum KtlsCompatibilityError {
     #[error("cipher suite not supported with kTLS: {0:?}")]
@@ -161,16 +187,7 @@ impl CryptoInfo {
 }
 
 pub fn setup_tls_info(fd: RawFd, dir: Direction, info: CryptoInfo) -> std::io::Result<()> {
-    let ret = unsafe {
-        libc::setsockopt(
-            fd,
-            SOL_TLS,
-            dir.into(),
-            &info as *const _ as *const libc::c_void,
-            std::mem::size_of_val(&info) as _,
-        )
-    };
-
+    let ret = unsafe { libc::setsockopt(fd, SOL_TLS, dir.into(), info.as_ptr(), info.size() as _) };
     if ret < 0 {
         return Err(std::io::Error::last_os_error());
     }
