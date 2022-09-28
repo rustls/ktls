@@ -1,0 +1,19 @@
+[package]
+name = "ktls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2.133"
+thiserror = "1.0.37"
+tracing = "0.1.36"
+tokio-rustls = "0.23.4"
+rustls = "0.20.6"
+
+[dependencies.ktls-sys]
+# path = "../ktls-sys"
+git = "https://github.com/hapsoc/ktls-sys"
+rev = "798466d"
+
+[patch.crates-io]
+rustls = { git = "https://github.com/hapsoc/rustls", rev = "ea3b1a6" }
