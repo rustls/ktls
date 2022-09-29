@@ -72,15 +72,7 @@ where
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
     ) -> task::Poll<io::Result<()>> {
-        let mut this = self.project();
-        let res = match this.inner.as_mut().poll_shutdown(cx) {
-            task::Poll::Pending => return task::Poll::Pending,
-            task::Poll::Ready(res) => res,
-        };
-
-        if let Err(e) = res {
-            return Err(e).into();
-        }
+        let this = self.project();
 
         if !*this.close_notified {
             // setting this optimistically, I don't think calling it more than
@@ -90,7 +82,8 @@ where
                 return Err(e).into();
             }
         }
-        Ok(()).into()
+
+        this.inner.poll_shutdown(cx)
     }
 }
 

@@ -2,13 +2,9 @@ use std::os::unix::prelude::RawFd;
 
 use ktls_sys::bindings as ktls;
 use rustls::{
-    internal::msgs::{
-        enums::AlertLevel,
-        message::{Message, OpaqueMessage},
-    },
+    internal::msgs::{enums::AlertLevel, message::Message},
     AlertDescription, BulkAlgorithm, DirectionalSecrets, SupportedCipherSuite,
 };
-use tokio_rustls::rustls::ContentType;
 
 const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_2_VERSION_MINOR & 0xFF) as u16);
@@ -255,26 +251,12 @@ impl<const N: usize> Cmsg<N> {
 }
 
 pub fn send_close_notify(fd: RawFd) -> std::io::Result<()> {
-    // let mut data = vec![];
-    // Message::build_alert(AlertLevel::Warning, AlertDescription::CloseNotify)
-    //     .payload
-    //     .encode(&mut data);
-    let mut data: Vec<u8> = vec![2, 50];
-    println!("data = {data:x?}");
+    let mut data = vec![];
+    Message::build_alert(AlertLevel::Warning, AlertDescription::CloseNotify)
+        .payload
+        .encode(&mut data);
 
     let mut cmsg = Cmsg::new(SOL_TLS, TLS_SET_RECORD_TYPE, [ALERT]);
-    unsafe {
-        println!(
-            "cmsg = {:x?}",
-            std::slice::from_raw_parts(
-                &cmsg as *const _ as *const u8,
-                std::mem::size_of_val(&cmsg)
-            )
-        );
-    }
-    println!("size_of cmsg: {}", std::mem::size_of::<Cmsg<1>>());
-    println!("offset of data = {}", memoffset::offset_of!(Cmsg<1>, data));
-    println!("cmsg_len = {}", cmsg.hdr.cmsg_len);
 
     let msg = libc::msghdr {
         msg_name: std::ptr::null_mut(),
@@ -288,24 +270,6 @@ pub fn send_close_notify(fd: RawFd) -> std::io::Result<()> {
         msg_controllen: cmsg.hdr.cmsg_len,
         msg_flags: 0,
     };
-
-    unsafe {
-        dbg!(msg.msg_name);
-        dbg!(msg.msg_namelen);
-        dbg!((*msg.msg_iov).iov_base);
-        dbg!((*msg.msg_iov).iov_len);
-        dbg!(msg.msg_iov);
-        dbg!(msg.msg_iovlen);
-        dbg!(msg.msg_control);
-        dbg!(msg.msg_controllen);
-        dbg!(msg.msg_flags);
-        dbg!(std::slice::from_raw_parts(
-            msg.msg_control as *const u8,
-            msg.msg_controllen as usize
-        ));
-    }
-
-    dbg!(fd);
 
     let ret = unsafe { libc::sendmsg(fd, &msg, 0) };
     if ret < 0 {
