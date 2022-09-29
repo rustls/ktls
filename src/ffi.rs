@@ -2,8 +2,8 @@ use std::os::unix::prelude::RawFd;
 
 use ktls_sys::bindings as ktls;
 use rustls::{
-    internal::msgs::enums::AlertLevel, AlertDescription, BulkAlgorithm, DirectionalSecrets,
-    SupportedCipherSuite,
+    internal::msgs::{enums::AlertLevel, message::Message},
+    AlertDescription, BulkAlgorithm, DirectionalSecrets, SupportedCipherSuite,
 };
 
 const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
@@ -242,8 +242,8 @@ impl<const N: usize> Cmsg<N> {
         Self {
             hdr: libc::cmsghdr {
                 cmsg_len: memoffset::offset_of!(Self, data) + N,
-                cmsg_level: SOL_TLS,
-                cmsg_type: TLS_SET_RECORD_TYPE,
+                cmsg_level: level,
+                cmsg_type: typ,
             },
             data,
         }
@@ -251,21 +251,31 @@ impl<const N: usize> Cmsg<N> {
 }
 
 pub fn send_close_notify(fd: RawFd) -> std::io::Result<()> {
-    let msg = rustls::internal::msgs::message::Message::build_alert(
-        AlertLevel::Fatal,
-        AlertDescription::CloseNotify,
-    );
-    let mut payload = Vec::new();
-    msg.payload.encode(&mut payload);
+    let msg = Message::build_alert(AlertLevel::Fatal, AlertDescription::CloseNotify);
+    let mut data = Vec::new();
+    msg.payload.encode(&mut data);
+    println!("data = {data:x?}");
 
     let mut cmsg = Cmsg::new(SOL_TLS, TLS_SET_RECORD_TYPE, [ALERT]);
+    unsafe {
+        println!(
+            "cmsg = {:x?}",
+            std::slice::from_raw_parts(
+                &cmsg as *const _ as *const u8,
+                std::mem::size_of_val(&cmsg)
+            )
+        );
+    }
+    println!("size_of cmsg: {}", std::mem::size_of::<Cmsg<1>>());
+    println!("offset of data = {}", memoffset::offset_of!(Cmsg<1>, data));
+    println!("cmsg_len = {}", cmsg.hdr.cmsg_len);
 
     let msg = libc::msghdr {
         msg_name: std::ptr::null_mut(),
         msg_namelen: 0,
         msg_iov: &mut libc::iovec {
-            iov_base: payload.as_ptr() as _,
-            iov_len: payload.len(),
+            iov_base: data.as_mut_ptr() as _,
+            iov_len: data.len(),
         },
         msg_iovlen: 1,
         msg_control: &mut cmsg as *mut _ as *mut _,

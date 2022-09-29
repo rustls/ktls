@@ -1,4 +1,4 @@
-use std::{io::ErrorKind, sync::Arc};
+use std::sync::Arc;
 
 use rcgen::generate_simple_self_signed;
 use rustls::{
@@ -15,7 +15,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::TlsConnector;
-use tracing::{debug, warn, Instrument};
+use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::test]
@@ -131,13 +131,6 @@ async fn actual_test(
         .unwrap();
 
     let mut buf: Vec<u8> = Default::default();
-    if let Err(e) = stream.read_to_end(&mut buf).await {
-        if e.kind() == ErrorKind::UnexpectedEof {
-            // fine for now, we don't send CLOSE_NOTIFY
-            warn!("ignoring UnexpectedEof because server doesn't send CLOSE_NOTIFY yet. state of buf = {:?}", String::from_utf8_lossy(&buf));
-        } else {
-            panic!("unexpected error: {}", e);
-        }
-    }
+    stream.read_to_end(&mut buf).await.unwrap();
     assert_eq!(buf, b"this is the server speaking\n");
 }

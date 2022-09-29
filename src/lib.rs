@@ -1,10 +1,11 @@
+use ffi::KtlsCompatibilityError;
 use std::os::unix::io::AsRawFd;
 
-use ffi::KtlsCompatibilityError;
-
+mod ffi;
 use crate::ffi::CryptoInfo;
 
-pub(crate) mod ffi;
+mod ktls_stream;
+pub use ktls_stream::KtlsStream;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error<IO> {
@@ -32,7 +33,7 @@ pub enum Error<IO> {
 /// to software encryption with rustls.
 pub fn config_ktls_server<IO>(
     stream: tokio_rustls::server::TlsStream<IO>,
-) -> Result<IO, Error<tokio_rustls::server::TlsStream<IO>>>
+) -> Result<KtlsStream<IO>, Error<tokio_rustls::server::TlsStream<IO>>>
 where
     IO: AsRawFd,
 {
@@ -65,5 +66,5 @@ where
     ffi::setup_tls_info(fd, ffi::Direction::Rx, client_info).map_err(Error::TlsCryptoInfoError)?;
 
     let (io, _conn) = stream.into_inner();
-    Ok(io)
+    Ok(KtlsStream::new(io))
 }
