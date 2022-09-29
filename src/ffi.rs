@@ -1,7 +1,10 @@
 use std::os::unix::prelude::RawFd;
 
 use ktls_sys::bindings as ktls;
-use rustls::{BulkAlgorithm, DirectionalSecrets, SupportedCipherSuite};
+use rustls::{
+    internal::msgs::enums::AlertLevel, AlertDescription, BulkAlgorithm, DirectionalSecrets,
+    SupportedCipherSuite,
+};
 
 const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_2_VERSION_MINOR & 0xFF) as u16);
@@ -217,6 +220,60 @@ impl CryptoInfo {
 
 pub fn setup_tls_info(fd: RawFd, dir: Direction, info: CryptoInfo) -> std::io::Result<()> {
     let ret = unsafe { libc::setsockopt(fd, SOL_TLS, dir.into(), info.as_ptr(), info.size() as _) };
+    if ret < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+const TLS_SET_RECORD_TYPE: libc::c_int = 1;
+const ALERT: u8 = 0x15;
+
+// Yes, really. cmsg components are aligned to [libc::c_long]
+#[cfg_attr(target_pointer_width = "32", repr(C, align(4)))]
+#[cfg_attr(target_pointer_width = "64", repr(C, align(8)))]
+struct Cmsg<const N: usize> {
+    hdr: libc::cmsghdr,
+    data: [u8; N],
+}
+
+impl<const N: usize> Cmsg<N> {
+    fn new(level: i32, typ: i32, data: [u8; N]) -> Self {
+        Self {
+            hdr: libc::cmsghdr {
+                cmsg_len: memoffset::offset_of!(Self, data) + N,
+                cmsg_level: SOL_TLS,
+                cmsg_type: TLS_SET_RECORD_TYPE,
+            },
+            data,
+        }
+    }
+}
+
+pub fn send_close_notify(fd: RawFd) -> std::io::Result<()> {
+    let msg = rustls::internal::msgs::message::Message::build_alert(
+        AlertLevel::Fatal,
+        AlertDescription::CloseNotify,
+    );
+    let mut payload = Vec::new();
+    msg.payload.encode(&mut payload);
+
+    let mut cmsg = Cmsg::new(SOL_TLS, TLS_SET_RECORD_TYPE, [ALERT]);
+
+    let msg = libc::msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut libc::iovec {
+            iov_base: payload.as_ptr() as _,
+            iov_len: payload.len(),
+        },
+        msg_iovlen: 1,
+        msg_control: &mut cmsg as *mut _ as *mut _,
+        msg_controllen: cmsg.hdr.cmsg_len,
+        msg_flags: 0,
+    };
+
+    let ret = unsafe { libc::sendmsg(fd, &msg, 0) };
     if ret < 0 {
         return Err(std::io::Error::last_os_error());
     }
