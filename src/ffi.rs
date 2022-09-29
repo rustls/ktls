@@ -3,7 +3,6 @@ use std::os::unix::prelude::RawFd;
 use ktls_sys::bindings as ktls;
 use rustls::{BulkAlgorithm, DirectionalSecrets, SupportedCipherSuite};
 
-#[allow(dead_code)]
 const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_2_VERSION_MINOR & 0xFF) as u16);
 
@@ -129,20 +128,50 @@ impl CryptoInfo {
     pub fn from_rustls(
         cipher_suite: SupportedCipherSuite,
         secrets: &DirectionalSecrets,
+        extra_random: &[u8],
     ) -> Result<CryptoInfo, KtlsCompatibilityError> {
+        // TODO: don't panic if key sizes are wrong, just return an error
+
         match cipher_suite {
             // XXX: ktls_test uses completely random IVs here, not sure why:
             // https://github.com/fasterthanlime/ktls_test/blob/e69d07d2613b3aa91ac7501549bd33738c65ec21/tls_client.c#L138-L140
             SupportedCipherSuite::Tls12(suite) => match suite.common.bulk {
                 BulkAlgorithm::Aes128Gcm => {
-                    Err(KtlsCompatibilityError::UnsupportedCipherSuite(cipher_suite))
+                    Ok(CryptoInfo::AesGcm128(ktls::tls12_crypto_info_aes_gcm_128 {
+                        info: ktls::tls_crypto_info {
+                            version: TLS_1_2_VERSION_NUMBER,
+                            cipher_type: ktls::TLS_CIPHER_AES_GCM_128 as _,
+                        },
+                        key: secrets.key[..].try_into().unwrap(),
+                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        salt: secrets.iv[..].try_into().unwrap(),
+                        iv: extra_random[..8].try_into().unwrap(),
+                    }))
                 }
                 BulkAlgorithm::Aes256Gcm => {
-                    Err(KtlsCompatibilityError::UnsupportedCipherSuite(cipher_suite))
+                    Ok(CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
+                        info: ktls::tls_crypto_info {
+                            version: TLS_1_2_VERSION_NUMBER,
+                            cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
+                        },
+                        key: secrets.key[..].try_into().unwrap(),
+                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        salt: secrets.iv[..].try_into().unwrap(),
+                        iv: extra_random[..8].try_into().unwrap(),
+                    }))
                 }
-                BulkAlgorithm::Chacha20Poly1305 => {
-                    Err(KtlsCompatibilityError::UnsupportedCipherSuite(cipher_suite))
-                }
+                BulkAlgorithm::Chacha20Poly1305 => Ok(CryptoInfo::Chacha20Poly1305(
+                    ktls::tls12_crypto_info_chacha20_poly1305 {
+                        info: ktls::tls_crypto_info {
+                            version: TLS_1_2_VERSION_NUMBER,
+                            cipher_type: ktls::TLS_CIPHER_CHACHA20_POLY1305 as _,
+                        },
+                        key: secrets.key[..].try_into().unwrap(),
+                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        salt: ktls::__IncompleteArrayField::new(),
+                        iv: secrets.iv[..].try_into().unwrap(),
+                    },
+                )),
             },
             SupportedCipherSuite::Tls13(suite) => match suite.common.bulk {
                 BulkAlgorithm::Aes128Gcm => {

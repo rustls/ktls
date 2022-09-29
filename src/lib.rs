@@ -50,8 +50,10 @@ where
         }
     };
 
-    let server_info = CryptoInfo::from_rustls(cipher_suite, &secrets.server)?;
-    let client_info = CryptoInfo::from_rustls(cipher_suite, &secrets.client)?;
+    let server_info =
+        CryptoInfo::from_rustls(cipher_suite, &secrets.server, &secrets.extra_random)?;
+    let client_info =
+        CryptoInfo::from_rustls(cipher_suite, &secrets.client, &secrets.extra_random)?;
 
     let fd = io.as_raw_fd();
 
