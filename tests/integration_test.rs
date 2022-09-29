@@ -15,36 +15,36 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::TlsConnector;
-use tracing::{debug, Instrument};
+use tracing::{debug, warn, Instrument};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::test]
-async fn rustls_1_3_aes_128_gcm() {
+async fn ktls_server_rustls_client_tls_1_3_aes_128_gcm() {
     actual_test(&TLS13, TLS13_AES_128_GCM_SHA256).await;
 }
 
 #[tokio::test]
-async fn rustls_1_3_aes_256_gcm() {
+async fn ktls_server_rustls_client_tls_1_3_aes_256_gcm() {
     actual_test(&TLS13, TLS13_AES_256_GCM_SHA384).await;
 }
 
 #[tokio::test]
-async fn rustls_1_3_chacha20_poly1305() {
+async fn ktls_server_rustls_client_tls_1_3_chacha20_poly1305() {
     actual_test(&TLS13, TLS13_CHACHA20_POLY1305_SHA256).await;
 }
 
 #[tokio::test]
-async fn rustls_1_2_ecdhe_aes_128_gcm() {
+async fn ktls_server_rustls_client_tls_1_2_ecdhe_aes_128_gcm() {
     actual_test(&TLS12, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256).await;
 }
 
 #[tokio::test]
-async fn rustls_1_2_ecdhe_aes_256_gcm() {
+async fn ktls_server_rustls_client_tls_1_2_ecdhe_aes_256_gcm() {
     actual_test(&TLS12, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384).await;
 }
 
 #[tokio::test]
-async fn rustls_1_2_ecdhe_chacha20_poly1305() {
+async fn ktls_server_rustls_client_tls_1_2_ecdhe_chacha20_poly1305() {
     actual_test(&TLS12, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256).await;
 }
 
@@ -53,8 +53,8 @@ async fn actual_test(
     cipher_suite: SupportedCipherSuite,
 ) {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new("rustls=trace,debug"))
-        // .with_env_filter(EnvFilter::new("debug"))
+        // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
+        .with_env_filter(EnvFilter::new("debug"))
         .pretty()
         .init();
 
@@ -134,6 +134,7 @@ async fn actual_test(
     if let Err(e) = stream.read_to_end(&mut buf).await {
         if e.kind() == ErrorKind::UnexpectedEof {
             // fine for now, we don't send CLOSE_NOTIFY
+            warn!("ignoring UnexpectedEof because server doesn't send CLOSE_NOTIFY yet. state of buf = {:?}", String::from_utf8_lossy(&buf));
         } else {
             panic!("unexpected error: {}", e);
         }
