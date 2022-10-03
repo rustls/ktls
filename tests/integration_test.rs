@@ -207,7 +207,7 @@ async fn client_test(
     println!("{}", cert.serialize_pem().unwrap());
     println!("{}", cert.serialize_private_key_pem());
 
-    let server_config = ServerConfig::builder()
+    let mut server_config = ServerConfig::builder()
         .with_cipher_suites(&[cipher_suite])
         .with_safe_default_kx_groups()
         .with_protocol_versions(&[protocol_version])
@@ -218,6 +218,8 @@ async fn client_test(
             rustls::PrivateKey(cert.serialize_private_key_der()),
         )
         .unwrap();
+
+    server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
     let ln = TcpListener::bind("[::]:0").await.unwrap();
@@ -259,13 +261,16 @@ async fn client_test(
         .add(&rustls::Certificate(cert.serialize_der().unwrap()))
         .unwrap();
 
-    let client_config = ClientConfig::builder()
+    let mut client_config = ClientConfig::builder()
         .with_safe_default_cipher_suites()
         .with_safe_default_kx_groups()
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_root_certificates(root_certs)
         .with_no_client_auth();
+
+    client_config.enable_tickets = false;
+
     let tls_connector = TlsConnector::from(Arc::new(client_config));
 
     let stream = TcpStream::connect(addr).await.unwrap();
