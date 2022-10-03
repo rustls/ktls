@@ -91,11 +91,20 @@ async fn server_test(
                 let (stream, addr) = ln.accept().await.unwrap();
                 debug!("Accepted TCP conn from {}", addr);
 
-                #[allow(unused_mut)]
-                let mut stream = acceptor.accept(stream).await.unwrap();
+                let stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
-                // let mut stream = ktls::config_ktls_server(stream).unwrap();
-                // debug!("Configured kTLS");
+
+                let mut stream = ktls::config_ktls_server(stream).unwrap();
+                debug!("Configured kTLS");
+
+                debug!("Reading data");
+                let mut buf = [0u8; CLIENT_PAYLOAD.len()];
+                stream.read_exact(&mut buf).await.unwrap();
+                assert_eq!(buf, CLIENT_PAYLOAD);
+
+                debug!("Writing data");
+                stream.write_all(SERVER_PAYLOAD).await.unwrap();
+                stream.flush().await.unwrap();
 
                 debug!("Reading data");
                 let mut buf = [0u8; CLIENT_PAYLOAD.len()];
@@ -122,6 +131,7 @@ async fn server_test(
         .unwrap()
         .with_root_certificates(root_certs)
         .with_no_client_auth();
+
     let tls_connector = TlsConnector::from(Arc::new(client_config));
 
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -134,7 +144,16 @@ async fn server_test(
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
-    stream.shutdown().await.unwrap();
+
+    debug!("Reading data");
+    let mut buf = [0u8; SERVER_PAYLOAD.len()];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(buf, SERVER_PAYLOAD);
+
+    debug!("Writing data");
+    stream.write_all(CLIENT_PAYLOAD).await.unwrap();
+    debug!("Flushing");
+    stream.flush().await.unwrap();
 
     debug!("Reading data");
     let mut buf = [0u8; SERVER_PAYLOAD.len()];
@@ -219,6 +238,14 @@ async fn client_test(
 
                 debug!("Writing data");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
+
+                debug!("Reading data");
+                let mut buf = [0u8; CLIENT_PAYLOAD.len()];
+                stream.read_exact(&mut buf).await.unwrap();
+                assert_eq!(buf, CLIENT_PAYLOAD);
+
+                debug!("Writing data");
+                stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.shutdown().await.unwrap();
 
                 debug!("Server is happy with the exchange");
@@ -248,6 +275,16 @@ async fn client_test(
         .unwrap();
 
     let mut stream = ktls::config_ktls_client(stream).unwrap();
+
+    debug!("Writing data");
+    stream.write_all(CLIENT_PAYLOAD).await.unwrap();
+    debug!("Flushing");
+    stream.flush().await.unwrap();
+
+    debug!("Reading data");
+    let mut buf = [0u8; SERVER_PAYLOAD.len()];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(buf, SERVER_PAYLOAD);
 
     debug!("Writing data");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();

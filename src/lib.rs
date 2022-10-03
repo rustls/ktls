@@ -1,11 +1,14 @@
 use ffi::KtlsCompatibilityError;
-use std::os::unix::io::AsRawFd;
+use futures::FutureExt;
+use std::{os::unix::io::AsRawFd, pin::Pin};
 
 mod ffi;
 use crate::ffi::CryptoInfo;
 
 mod ktls_stream;
 pub use ktls_stream::KtlsStream;
+
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error<IO> {
@@ -32,10 +35,10 @@ pub enum Error<IO> {
 /// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
 /// to software encryption with rustls.
 pub fn config_ktls_server<IO>(
-    stream: tokio_rustls::server::TlsStream<IO>,
+    mut stream: tokio_rustls::server::TlsStream<IO>,
 ) -> Result<KtlsStream<IO>, Error<tokio_rustls::server::TlsStream<IO>>>
 where
-    IO: AsRawFd,
+    IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     let (io, conn) = stream.get_ref();
 
@@ -62,10 +65,31 @@ where
         return Err(Error::UlpError(stream, err));
     };
 
+    // we've set up TLS as the ULP, now we should drain whatever data rustls
+    // has already read+decrypted from the socket before we set up tx/rx
+    let mut buf = vec![0u8; 16384];
+    let mut rb = ReadBuf::new(&mut buf[..]);
+    let read_fut = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut rb));
+    match read_fut.now_or_never() {
+        Some(res) => {
+            println!("read was ok? {}", res.is_ok());
+            println!("drained {} bytes", rb.filled().len());
+            println!(
+                "drained bytes: {:x?} ({:?})",
+                rb.filled(),
+                std::str::from_utf8(rb.filled())
+            );
+        }
+        None => {
+            println!("read_fut not ready");
+        }
+    }
+
     ffi::setup_tls_info(fd, ffi::Direction::Tx, server_info).map_err(Error::TlsCryptoInfoError)?;
     ffi::setup_tls_info(fd, ffi::Direction::Rx, client_info).map_err(Error::TlsCryptoInfoError)?;
 
     let (io, _conn) = stream.into_inner();
+
     Ok(KtlsStream::new(io))
 }
 
