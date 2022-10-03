@@ -67,30 +67,37 @@ where
 
     // we've set up TLS as the ULP, now we should drain whatever data rustls
     // has already read+decrypted from the socket before we set up tx/rx
-    let mut buf = vec![0u8; 16384];
-    let mut rb = ReadBuf::new(&mut buf[..]);
-    let read_fut = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut rb));
-    match read_fut.now_or_never() {
-        Some(res) => {
-            println!("read was ok? {}", res.is_ok());
-            println!("drained {} bytes", rb.filled().len());
-            println!(
-                "drained bytes: {:x?} ({:?})",
-                rb.filled(),
-                std::str::from_utf8(rb.filled())
-            );
+    let drained = {
+        let mut drained = vec![0u8; 16384];
+        let mut rb = ReadBuf::new(&mut drained[..]);
+        let read_fut = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut rb));
+
+        match read_fut.now_or_never() {
+            Some(res) => {
+                println!("read was ok? {}", res.is_ok());
+                println!("drained {} bytes", rb.filled().len());
+                println!(
+                    "drained bytes: {:x?} ({:?})",
+                    rb.filled(),
+                    std::str::from_utf8(rb.filled())
+                );
+                let filled_len = rb.filled().len();
+                drained.resize(filled_len, 0);
+                Some(drained)
+            }
+            None => {
+                println!("read_fut not ready");
+                None
+            }
         }
-        None => {
-            println!("read_fut not ready");
-        }
-    }
+    };
 
     ffi::setup_tls_info(fd, ffi::Direction::Tx, server_info).map_err(Error::TlsCryptoInfoError)?;
     ffi::setup_tls_info(fd, ffi::Direction::Rx, client_info).map_err(Error::TlsCryptoInfoError)?;
 
     let (io, _conn) = stream.into_inner();
 
-    Ok(KtlsStream::new(io))
+    Ok(KtlsStream::new(io, drained))
 }
 
 /// Configure kTLS for this socket. If this call succeeds, data can be
@@ -134,5 +141,6 @@ where
     ffi::setup_tls_info(fd, ffi::Direction::Rx, server_info).map_err(Error::TlsCryptoInfoError)?;
 
     let (io, _conn) = stream.into_inner();
-    Ok(KtlsStream::new(io))
+
+    Ok(KtlsStream::new(io, None /* TODO: drain */))
 }

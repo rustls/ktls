@@ -11,6 +11,7 @@ pin_project_lite::pin_project! {
         #[pin]
         inner: IO,
         close_notified: bool,
+        drained: Option<(usize, Vec<u8>)>,
     }
 
     impl<IO> PinnedDrop for KtlsStream<IO>
@@ -31,10 +32,11 @@ impl<IO> KtlsStream<IO>
 where
     IO: AsRawFd,
 {
-    pub fn new(inner: IO) -> Self {
+    pub fn new(inner: IO, drained: Option<Vec<u8>>) -> Self {
         Self {
             inner,
             close_notified: false,
+            drained: drained.map(|drained| (0, drained)),
         }
     }
 }
@@ -48,7 +50,22 @@ where
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> task::Poll<io::Result<()>> {
-        self.project().inner.poll_read(cx, buf)
+        let this = self.project();
+
+        if let Some((drain_index, drained)) = this.drained.as_mut() {
+            let drained = &drained[*drain_index..];
+            let len = std::cmp::min(buf.remaining(), drained.len());
+            buf.put_slice(&drained[..len]);
+            *drain_index += len;
+            if *drain_index >= drained.len() {
+                *this.drained = None;
+            }
+            cx.waker().wake_by_ref();
+
+            return task::Poll::Ready(Ok(()));
+        }
+
+        this.inner.poll_read(cx, buf)
     }
 }
 
