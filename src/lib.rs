@@ -1,6 +1,9 @@
-use ffi::KtlsCompatibilityError;
-use futures::FutureExt;
-use std::{os::unix::io::AsRawFd, pin::Pin};
+use ffi::{setup_tls_info, KtlsCompatibilityError};
+use rustls::ConnectionCommon;
+use std::{
+    os::unix::{io::AsRawFd, prelude::RawFd},
+    pin::Pin,
+};
 
 mod ffi;
 use crate::ffi::CryptoInfo;
@@ -12,8 +15,17 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error<IO> {
+    #[error("recoverable: {1}")]
+    Recoverable(IO, RecoverableError),
+
+    #[error("unrecoverable: {0}")]
+    Unrecoverable(#[from] UnrecoverableError),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum RecoverableError {
     #[error("failed to export secrets")]
-    ExportSecrets(IO, rustls::Error),
+    ExportSecrets(rustls::Error),
 
     #[error("no negotiated cipher suite: call config_ktls_* only /after/ the handshake")]
     NoNegotiatedCipherSuite,
@@ -22,9 +34,12 @@ pub enum Error<IO> {
     KtlsCompatibility(#[from] KtlsCompatibilityError),
 
     #[error("failed to enable TLS ULP (upper level protocol): {0}")]
-    UlpError(IO, std::io::Error),
+    UlpError(std::io::Error),
+}
 
-    #[error("failed to pass crypto info to kernel: {0}")]
+#[derive(thiserror::Error, Debug)]
+pub enum UnrecoverableError {
+    #[error("failed to configure tx/rx (unsupported cipher?): {0}")]
     TlsCryptoInfoError(std::io::Error),
 }
 
@@ -41,65 +56,18 @@ where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     let (io, conn) = stream.get_ref();
-
-    let cipher_suite = match conn.negotiated_cipher_suite() {
-        Some(cipher_suite) => cipher_suite,
-        None => {
-            return Err(Error::NoNegotiatedCipherSuite);
-        }
-    };
-
     let fd = io.as_raw_fd();
 
-    let (tx_info, rx_info) = match stream.get_ref().1.extract_secrets::<Result<
-        (CryptoInfo, CryptoInfo),
-        KtlsCompatibilityError,
-    >>(|secrets| {
-        let tx_info = CryptoInfo::from_rustls(cipher_suite, &secrets.tx)?;
-        let rx_info = CryptoInfo::from_rustls(cipher_suite, &secrets.rx)?;
-
-        Ok((tx_info, rx_info))
-    }) {
-        Ok(pair) => pair?,
-        Err(err) => return Err(Error::ExportSecrets(stream, err)),
+    let (tx, rx) = match setup_inner(fd, conn) {
+        Ok(pair) => pair,
+        Err(e) => return Err(Error::Recoverable(stream, e)),
     };
 
-    if let Err(err) = ffi::setup_ulp(fd) {
-        return Err(Error::UlpError(stream, err));
-    };
-
-    // we've set up TLS as the ULP, now we should drain whatever data rustls
-    // has already read+decrypted from the socket before we set up tx/rx
-    let drained = {
-        let mut drained = vec![0u8; 16384];
-        let mut rb = ReadBuf::new(&mut drained[..]);
-        let read_fut = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut rb));
-
-        match read_fut.now_or_never() {
-            Some(res) => {
-                println!("read was ok? {}", res.is_ok());
-                println!("drained {} bytes", rb.filled().len());
-                println!(
-                    "drained bytes: {:x?} ({:?})",
-                    rb.filled(),
-                    std::str::from_utf8(rb.filled())
-                );
-                let filled_len = rb.filled().len();
-                drained.resize(filled_len, 0);
-                Some(drained)
-            }
-            None => {
-                println!("read_fut not ready");
-                None
-            }
-        }
-    };
-
-    ffi::setup_tls_info(fd, ffi::Direction::Tx, tx_info).map_err(Error::TlsCryptoInfoError)?;
-    ffi::setup_tls_info(fd, ffi::Direction::Rx, rx_info).map_err(Error::TlsCryptoInfoError)?;
+    let drained = drain(&mut stream);
+    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
+    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
 
     let (io, _conn) = stream.into_inner();
-
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -110,42 +78,68 @@ where
 /// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
 /// to software encryption with rustls.
 pub fn config_ktls_client<IO>(
-    _stream: tokio_rustls::client::TlsStream<IO>,
+    mut stream: tokio_rustls::client::TlsStream<IO>,
 ) -> Result<KtlsStream<IO>, Error<tokio_rustls::client::TlsStream<IO>>>
 where
-    IO: AsRawFd,
+    IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
-    panic!("todo");
+    let (io, conn) = stream.get_ref();
+    let fd = io.as_raw_fd();
 
-    // let (io, conn) = stream.get_ref();
+    let (tx, rx) = match setup_inner(fd, conn) {
+        Ok(pair) => pair,
+        Err(e) => return Err(Error::Recoverable(stream, e)),
+    };
 
-    // let secrets = match stream.get_ref().1.export_all_secrets() {
-    //     Ok(secrets) => secrets,
-    //     Err(err) => return Err(Error::ExportSecrets(stream, err)),
-    // };
+    let drained = drain(&mut stream);
+    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
+    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
 
-    // let cipher_suite = match conn.negotiated_cipher_suite() {
-    //     Some(cipher_suite) => cipher_suite,
-    //     None => {
-    //         return Err(Error::NoNegotiatedCipherSuite);
-    //     }
-    // };
+    let (io, _conn) = stream.into_inner();
+    Ok(KtlsStream::new(io, drained))
+}
 
-    // let server_info =
-    //     CryptoInfo::from_rustls(cipher_suite, &secrets.server, &secrets.extra_random)?;
-    // let client_info =
-    //     CryptoInfo::from_rustls(cipher_suite, &secrets.client, &secrets.extra_random)?;
+/// Read all the bytes we can read without blocking. This is used to drained the
+/// already-decrypted buffer from a tokio-rustls I/O type
+fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
+    let mut drained = vec![0u8; 16384];
+    let mut rb = ReadBuf::new(&mut drained[..]);
 
-    // let fd = io.as_raw_fd();
+    let noop_waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&noop_waker);
 
-    // if let Err(err) = ffi::setup_ulp(fd) {
-    //     return Err(Error::UlpError(stream, err));
-    // };
+    match Pin::new(stream).poll_read(&mut cx, &mut rb) {
+        std::task::Poll::Ready(_) => {
+            let filled_len = rb.filled().len();
+            drained.resize(filled_len, 0);
+            Some(drained)
+        }
+        _ => None,
+    }
+}
 
-    // ffi::setup_tls_info(fd, ffi::Direction::Tx, client_info).map_err(Error::TlsCryptoInfoError)?;
-    // ffi::setup_tls_info(fd, ffi::Direction::Rx, server_info).map_err(Error::TlsCryptoInfoError)?;
+fn setup_inner<Data>(
+    fd: RawFd,
+    conn: &ConnectionCommon<Data>,
+) -> Result<(CryptoInfo, CryptoInfo), RecoverableError> {
+    let cipher_suite = match conn.negotiated_cipher_suite() {
+        Some(cipher_suite) => cipher_suite,
+        None => {
+            return Err(RecoverableError::NoNegotiatedCipherSuite);
+        }
+    };
 
-    // let (io, _conn) = stream.into_inner();
+    let secrets = match conn.extract_secrets() {
+        Ok(secrets) => secrets,
+        Err(err) => return Err(RecoverableError::ExportSecrets(err)),
+    };
 
-    // Ok(KtlsStream::new(io, None /* TODO: drain */))
+    let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
+    let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
+
+    if let Err(err) = ffi::setup_ulp(fd) {
+        return Err(RecoverableError::UlpError(err));
+    };
+
+    Ok((tx, rx))
 }
