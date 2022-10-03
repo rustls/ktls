@@ -68,3 +68,47 @@ where
     let (io, _conn) = stream.into_inner();
     Ok(KtlsStream::new(io))
 }
+
+/// Configure kTLS for this socket. If this call succeeds, data can be
+/// written and read from this socket, and the kernel takes care of encryption
+/// (and key updates, etc.) transparently.
+///
+/// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
+/// to software encryption with rustls.
+pub fn config_ktls_client<IO>(
+    stream: tokio_rustls::client::TlsStream<IO>,
+) -> Result<KtlsStream<IO>, Error<tokio_rustls::client::TlsStream<IO>>>
+where
+    IO: AsRawFd,
+{
+    let (io, conn) = stream.get_ref();
+
+    let secrets = match stream.get_ref().1.export_all_secrets() {
+        Ok(secrets) => secrets,
+        Err(err) => return Err(Error::ExportSecrets(stream, err)),
+    };
+
+    let cipher_suite = match conn.negotiated_cipher_suite() {
+        Some(cipher_suite) => cipher_suite,
+        None => {
+            return Err(Error::NoNegotiatedCipherSuite);
+        }
+    };
+
+    let server_info =
+        CryptoInfo::from_rustls(cipher_suite, &secrets.server, &secrets.extra_random)?;
+    let client_info =
+        CryptoInfo::from_rustls(cipher_suite, &secrets.client, &secrets.extra_random)?;
+
+    let fd = io.as_raw_fd();
+
+    if let Err(err) = ffi::setup_ulp(fd) {
+        return Err(Error::UlpError(stream, err));
+    };
+
+    ffi::setup_tls_info(fd, ffi::Direction::Tx, client_info).map_err(Error::TlsCryptoInfoError)?;
+    ffi::setup_tls_info(fd, ffi::Direction::Rx, server_info).map_err(Error::TlsCryptoInfoError)?;
+
+    let (io, _conn) = stream.into_inner();
+    Ok(KtlsStream::new(io))
+}
