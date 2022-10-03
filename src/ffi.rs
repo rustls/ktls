@@ -131,7 +131,6 @@ impl CryptoInfo {
     pub fn from_rustls(
         cipher_suite: SupportedCipherSuite,
         secrets: &DirectionalSecrets,
-        extra_random: &[u8],
     ) -> Result<CryptoInfo, KtlsCompatibilityError> {
         // TODO: don't panic if key sizes are wrong, just return an error
 
@@ -146,9 +145,9 @@ impl CryptoInfo {
                             cipher_type: ktls::TLS_CIPHER_AES_GCM_128 as _,
                         },
                         key: secrets.key[..].try_into().unwrap(),
-                        rec_seq: secrets.seq_number.to_be_bytes(),
-                        salt: secrets.iv[..].try_into().unwrap(),
-                        iv: extra_random[..8].try_into().unwrap(),
+                        rec_seq: secrets.seq.to_be_bytes(),
+                        salt: secrets.iv[..4].try_into().unwrap(),
+                        iv: secrets.iv[4..].try_into().unwrap(),
                     }))
                 }
                 BulkAlgorithm::Aes256Gcm => {
@@ -158,9 +157,9 @@ impl CryptoInfo {
                             cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
                         },
                         key: secrets.key[..].try_into().unwrap(),
-                        rec_seq: secrets.seq_number.to_be_bytes(),
-                        salt: secrets.iv[..].try_into().unwrap(),
-                        iv: extra_random[..8].try_into().unwrap(),
+                        rec_seq: secrets.seq.to_be_bytes(),
+                        salt: secrets.iv[..4].try_into().unwrap(),
+                        iv: secrets.iv[4..].try_into().unwrap(),
                     }))
                 }
                 BulkAlgorithm::Chacha20Poly1305 => Ok(CryptoInfo::Chacha20Poly1305(
@@ -170,7 +169,7 @@ impl CryptoInfo {
                             cipher_type: ktls::TLS_CIPHER_CHACHA20_POLY1305 as _,
                         },
                         key: secrets.key[..].try_into().unwrap(),
-                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        rec_seq: secrets.seq.to_be_bytes(),
                         salt: ktls::__IncompleteArrayField::new(),
                         iv: secrets.iv[..].try_into().unwrap(),
                     },
@@ -184,7 +183,7 @@ impl CryptoInfo {
                             cipher_type: ktls::TLS_CIPHER_AES_GCM_128 as _,
                         },
                         key: secrets.key[..].try_into().unwrap(),
-                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        rec_seq: secrets.seq.to_be_bytes(),
                         salt: secrets.iv[..4].try_into().unwrap(),
                         iv: secrets.iv[4..].try_into().unwrap(),
                     }))
@@ -196,7 +195,7 @@ impl CryptoInfo {
                             cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
                         },
                         key: secrets.key[..].try_into().unwrap(),
-                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        rec_seq: secrets.seq.to_be_bytes(),
                         salt: secrets.iv[..4].try_into().unwrap(),
                         iv: secrets.iv[4..].try_into().unwrap(),
                     }))
@@ -208,7 +207,7 @@ impl CryptoInfo {
                             cipher_type: ktls::TLS_CIPHER_CHACHA20_POLY1305 as _,
                         },
                         key: secrets.key[..].try_into().unwrap(),
-                        rec_seq: secrets.seq_number.to_be_bytes(),
+                        rec_seq: secrets.seq.to_be_bytes(),
                         salt: ktls::__IncompleteArrayField::new(),
                         iv: secrets.iv[..].try_into().unwrap(),
                     },

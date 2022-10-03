@@ -42,11 +42,6 @@ where
 {
     let (io, conn) = stream.get_ref();
 
-    let secrets = match stream.get_ref().1.export_all_secrets() {
-        Ok(secrets) => secrets,
-        Err(err) => return Err(Error::ExportSecrets(stream, err)),
-    };
-
     let cipher_suite = match conn.negotiated_cipher_suite() {
         Some(cipher_suite) => cipher_suite,
         None => {
@@ -54,12 +49,20 @@ where
         }
     };
 
-    let server_info =
-        CryptoInfo::from_rustls(cipher_suite, &secrets.server, &secrets.extra_random)?;
-    let client_info =
-        CryptoInfo::from_rustls(cipher_suite, &secrets.client, &secrets.extra_random)?;
-
     let fd = io.as_raw_fd();
+
+    let (tx_info, rx_info) = match stream.get_ref().1.extract_secrets::<Result<
+        (CryptoInfo, CryptoInfo),
+        KtlsCompatibilityError,
+    >>(|secrets| {
+        let tx_info = CryptoInfo::from_rustls(cipher_suite, &secrets.tx)?;
+        let rx_info = CryptoInfo::from_rustls(cipher_suite, &secrets.rx)?;
+
+        Ok((tx_info, rx_info))
+    }) {
+        Ok(pair) => pair?,
+        Err(err) => return Err(Error::ExportSecrets(stream, err)),
+    };
 
     if let Err(err) = ffi::setup_ulp(fd) {
         return Err(Error::UlpError(stream, err));
@@ -92,8 +95,8 @@ where
         }
     };
 
-    ffi::setup_tls_info(fd, ffi::Direction::Tx, server_info).map_err(Error::TlsCryptoInfoError)?;
-    ffi::setup_tls_info(fd, ffi::Direction::Rx, client_info).map_err(Error::TlsCryptoInfoError)?;
+    ffi::setup_tls_info(fd, ffi::Direction::Tx, tx_info).map_err(Error::TlsCryptoInfoError)?;
+    ffi::setup_tls_info(fd, ffi::Direction::Rx, rx_info).map_err(Error::TlsCryptoInfoError)?;
 
     let (io, _conn) = stream.into_inner();
 
@@ -107,40 +110,42 @@ where
 /// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
 /// to software encryption with rustls.
 pub fn config_ktls_client<IO>(
-    stream: tokio_rustls::client::TlsStream<IO>,
+    _stream: tokio_rustls::client::TlsStream<IO>,
 ) -> Result<KtlsStream<IO>, Error<tokio_rustls::client::TlsStream<IO>>>
 where
     IO: AsRawFd,
 {
-    let (io, conn) = stream.get_ref();
+    panic!("todo");
 
-    let secrets = match stream.get_ref().1.export_all_secrets() {
-        Ok(secrets) => secrets,
-        Err(err) => return Err(Error::ExportSecrets(stream, err)),
-    };
+    // let (io, conn) = stream.get_ref();
 
-    let cipher_suite = match conn.negotiated_cipher_suite() {
-        Some(cipher_suite) => cipher_suite,
-        None => {
-            return Err(Error::NoNegotiatedCipherSuite);
-        }
-    };
+    // let secrets = match stream.get_ref().1.export_all_secrets() {
+    //     Ok(secrets) => secrets,
+    //     Err(err) => return Err(Error::ExportSecrets(stream, err)),
+    // };
 
-    let server_info =
-        CryptoInfo::from_rustls(cipher_suite, &secrets.server, &secrets.extra_random)?;
-    let client_info =
-        CryptoInfo::from_rustls(cipher_suite, &secrets.client, &secrets.extra_random)?;
+    // let cipher_suite = match conn.negotiated_cipher_suite() {
+    //     Some(cipher_suite) => cipher_suite,
+    //     None => {
+    //         return Err(Error::NoNegotiatedCipherSuite);
+    //     }
+    // };
 
-    let fd = io.as_raw_fd();
+    // let server_info =
+    //     CryptoInfo::from_rustls(cipher_suite, &secrets.server, &secrets.extra_random)?;
+    // let client_info =
+    //     CryptoInfo::from_rustls(cipher_suite, &secrets.client, &secrets.extra_random)?;
 
-    if let Err(err) = ffi::setup_ulp(fd) {
-        return Err(Error::UlpError(stream, err));
-    };
+    // let fd = io.as_raw_fd();
 
-    ffi::setup_tls_info(fd, ffi::Direction::Tx, client_info).map_err(Error::TlsCryptoInfoError)?;
-    ffi::setup_tls_info(fd, ffi::Direction::Rx, server_info).map_err(Error::TlsCryptoInfoError)?;
+    // if let Err(err) = ffi::setup_ulp(fd) {
+    //     return Err(Error::UlpError(stream, err));
+    // };
 
-    let (io, _conn) = stream.into_inner();
+    // ffi::setup_tls_info(fd, ffi::Direction::Tx, client_info).map_err(Error::TlsCryptoInfoError)?;
+    // ffi::setup_tls_info(fd, ffi::Direction::Rx, server_info).map_err(Error::TlsCryptoInfoError)?;
 
-    Ok(KtlsStream::new(io, None /* TODO: drain */))
+    // let (io, _conn) = stream.into_inner();
+
+    // Ok(KtlsStream::new(io, None /* TODO: drain */))
 }
