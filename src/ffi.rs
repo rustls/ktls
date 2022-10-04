@@ -3,7 +3,7 @@ use std::os::unix::prelude::RawFd;
 use ktls_sys::bindings as ktls;
 use rustls::{
     internal::msgs::{enums::AlertLevel, message::Message},
-    AlertDescription, AlgorithmSecrets, SupportedCipherSuite,
+    AlertDescription, ConnectionTrafficSecrets, SupportedCipherSuite,
 };
 
 const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
@@ -130,7 +130,7 @@ impl CryptoInfo {
     /// Try to convert rustls cipher suite and secrets into a `CryptoInfo`.
     pub fn from_rustls(
         cipher_suite: SupportedCipherSuite,
-        (seq, secrets): (u64, AlgorithmSecrets),
+        (seq, secrets): (u64, ConnectionTrafficSecrets),
     ) -> Result<CryptoInfo, KtlsCompatibilityError> {
         let version = match cipher_suite {
             SupportedCipherSuite::Tls12(..) => TLS_1_2_VERSION_NUMBER,
@@ -138,7 +138,7 @@ impl CryptoInfo {
         };
 
         Ok(match secrets {
-            AlgorithmSecrets::Aes128Gcm { key, salt, iv } => {
+            ConnectionTrafficSecrets::Aes128Gcm { key, salt, iv } => {
                 CryptoInfo::AesGcm128(ktls::tls12_crypto_info_aes_gcm_128 {
                     info: ktls::tls_crypto_info {
                         version,
@@ -150,7 +150,7 @@ impl CryptoInfo {
                     rec_seq: seq.to_be_bytes(),
                 })
             }
-            AlgorithmSecrets::Aes256Gcm { key, salt, iv } => {
+            ConnectionTrafficSecrets::Aes256Gcm { key, salt, iv } => {
                 CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
                     info: ktls::tls_crypto_info {
                         version,
@@ -162,7 +162,7 @@ impl CryptoInfo {
                     rec_seq: seq.to_be_bytes(),
                 })
             }
-            AlgorithmSecrets::Chacha20Poly1305 { key, iv } => {
+            ConnectionTrafficSecrets::Chacha20Poly1305 { key, iv } => {
                 CryptoInfo::Chacha20Poly1305(ktls::tls12_crypto_info_chacha20_poly1305 {
                     info: ktls::tls_crypto_info {
                         version,

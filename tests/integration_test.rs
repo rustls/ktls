@@ -79,6 +79,7 @@ async fn server_test(
         )
         .unwrap();
 
+    server_config.enable_secret_extraction = true;
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
@@ -269,6 +270,7 @@ async fn client_test(
         .with_root_certificates(root_certs)
         .with_no_client_auth();
 
+    client_config.enable_secret_extraction = true;
     client_config.enable_tickets = false;
 
     let tls_connector = TlsConnector::from(Arc::new(client_config));
