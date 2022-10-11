@@ -1,7 +1,12 @@
 use ffi::{setup_tls_info, KtlsCompatibilityError};
-use rustls::Connection;
+use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
 use std::{
-    os::unix::{io::AsRawFd, prelude::RawFd},
+    io::Read,
+    net::{SocketAddr, TcpListener},
+    os::unix::{
+        io::AsRawFd,
+        prelude::{FromRawFd, RawFd},
+    },
     pin::Pin,
 };
 
@@ -12,6 +17,125 @@ mod ktls_stream;
 pub use ktls_stream::KtlsStream;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+#[derive(Debug, Default)]
+pub struct CompatibleCiphers {
+    pub tls12: CompatibleCiphersForVersion,
+    pub tls13: CompatibleCiphersForVersion,
+}
+
+#[derive(Debug, Default)]
+pub struct CompatibleCiphersForVersion {
+    pub aes_gcm_128: bool,
+    pub aes_gcm_256: bool,
+    pub chacha20_poly1305: bool,
+}
+
+impl CompatibleCiphers {
+    /// List compatible ciphers. This listens on a TCP socket and blocks for a
+    /// little while. Do once at the very start of a program. Should probably be
+    /// behind a lazy_static / once_cell
+    pub fn new() -> Self {
+        let mut ciphers = CompatibleCiphers::default();
+
+        let ln = TcpListener::bind("0.0.0.0:0").unwrap();
+        let local_addr = ln.local_addr().unwrap();
+
+        let ln_fd = ln.as_raw_fd();
+        // this should close the listener on drop
+        let _guard = unsafe { std::fs::File::from_raw_fd(ln_fd) };
+
+        std::thread::spawn(move || {
+            while let Ok((mut sock, _addr)) = ln.accept() {
+                let mut buf = Vec::new();
+                sock.read_to_end(&mut buf).unwrap();
+            }
+        });
+
+        let test_cipher = |cipher_suite: SupportedCipherSuite, field: &mut bool| {
+            if sample_cipher_setup(local_addr, cipher_suite).is_ok() {
+                *field = true;
+            }
+        };
+
+        test_cipher(
+            rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+            &mut ciphers.tls13.aes_gcm_128,
+        );
+        test_cipher(
+            rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
+            &mut ciphers.tls13.aes_gcm_256,
+        );
+        test_cipher(
+            rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+            &mut ciphers.tls13.chacha20_poly1305,
+        );
+
+        test_cipher(
+            rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            &mut ciphers.tls12.aes_gcm_128,
+        );
+        test_cipher(
+            rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+            &mut ciphers.tls12.aes_gcm_256,
+        );
+        test_cipher(
+            rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            &mut ciphers.tls12.chacha20_poly1305,
+        );
+
+        ciphers
+    }
+
+    /// Returns true if we're reasonably confident that functions like
+    /// [config_ktls_client] and [config_ktls_server] will succeed.
+    pub fn is_compatible(&self, suite: &SupportedCipherSuite) -> bool {
+        let (fields, bulk) = match suite {
+            SupportedCipherSuite::Tls12(suite) => (&self.tls12, &suite.common.bulk),
+            SupportedCipherSuite::Tls13(suite) => (&self.tls13, &suite.common.bulk),
+        };
+        match bulk {
+            rustls::BulkAlgorithm::Aes128Gcm => fields.aes_gcm_128,
+            rustls::BulkAlgorithm::Aes256Gcm => fields.aes_gcm_256,
+            rustls::BulkAlgorithm::Chacha20Poly1305 => fields.chacha20_poly1305,
+        }
+    }
+}
+
+fn sample_cipher_setup(addr: SocketAddr, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
+    let bulk_algo = match cipher_suite {
+        SupportedCipherSuite::Tls12(suite) => &suite.common.bulk,
+        SupportedCipherSuite::Tls13(suite) => &suite.common.bulk,
+    };
+    let zero_secrets = match bulk_algo {
+        rustls::BulkAlgorithm::Aes128Gcm => ConnectionTrafficSecrets::Aes128Gcm {
+            key: Default::default(),
+            salt: Default::default(),
+            iv: Default::default(),
+        },
+        rustls::BulkAlgorithm::Aes256Gcm => ConnectionTrafficSecrets::Aes256Gcm {
+            key: Default::default(),
+            salt: Default::default(),
+            iv: Default::default(),
+        },
+        rustls::BulkAlgorithm::Chacha20Poly1305 => ConnectionTrafficSecrets::Chacha20Poly1305 {
+            key: Default::default(),
+            iv: Default::default(),
+        },
+    };
+
+    let seq_secrets = (0, zero_secrets);
+    let info = CryptoInfo::from_rustls(cipher_suite, seq_secrets).unwrap();
+
+    let sock = std::net::TcpStream::connect(addr).unwrap();
+    let fd = sock.as_raw_fd();
+
+    ffi::setup_ulp(fd).map_err(Error::UlpError)?;
+
+    setup_tls_info(fd, ffi::Direction::Tx, info)?;
+
+    Ok(())
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -99,9 +223,7 @@ fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
         Err(err) => return Err(Error::ExportSecrets(err)),
     };
 
-    if let Err(err) = ffi::setup_ulp(fd) {
-        return Err(Error::UlpError(err));
-    };
+    ffi::setup_ulp(fd).map_err(Error::UlpError)?;
 
     let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
     setup_tls_info(fd, ffi::Direction::Tx, tx)?;

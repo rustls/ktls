@@ -6,10 +6,10 @@ use rustls::{
     AlertDescription, ConnectionTrafficSecrets, SupportedCipherSuite,
 };
 
-const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
+pub(crate) const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_2_VERSION_MINOR & 0xFF) as u16);
 
-const TLS_1_3_VERSION_NUMBER: u16 = (((ktls::TLS_1_3_VERSION_MAJOR & 0xFF) as u16) << 8)
+pub(crate) const TLS_1_3_VERSION_NUMBER: u16 = (((ktls::TLS_1_3_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_3_VERSION_MINOR & 0xFF) as u16);
 
 /// `setsockopt` level constant: TCP
