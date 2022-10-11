@@ -14,21 +14,7 @@ pub use ktls_stream::KtlsStream;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error<IO> {
-    #[error("recoverable: {1}")]
-    Recoverable(IO, RecoverableError),
-
-    #[error("unrecoverable: {0}")]
-    Unrecoverable(#[from] UnrecoverableError),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum RecoverableError {
-    // TODO: some errors are recoverable, make them so
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum UnrecoverableError {
+pub enum Error {
     #[error("failed to enable TLS ULP (upper level protocol): {0}")]
     UlpError(std::io::Error),
 
@@ -53,7 +39,7 @@ pub enum UnrecoverableError {
 /// to software encryption with rustls.
 pub fn config_ktls_server<IO>(
     mut stream: tokio_rustls::server::TlsStream<IO>,
-) -> Result<KtlsStream<IO>, Error<tokio_rustls::server::TlsStream<IO>>>
+) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
@@ -62,11 +48,7 @@ where
     let (io, conn) = stream.into_inner();
     let fd = io.as_raw_fd();
 
-    let (tx, rx) = match setup_inner(fd, Connection::Server(conn)) {
-        Ok(pair) => pair,
-        Err(e) => return Err(e.into()),
-    };
-
+    let (tx, rx) = setup_inner(fd, Connection::Server(conn))?;
     setup_tls_info(fd, ffi::Direction::Tx, tx)?;
     setup_tls_info(fd, ffi::Direction::Rx, rx)?;
 
@@ -81,7 +63,7 @@ where
 /// to software encryption with rustls.
 pub fn config_ktls_client<IO>(
     mut stream: tokio_rustls::client::TlsStream<IO>,
-) -> Result<KtlsStream<IO>, Error<tokio_rustls::client::TlsStream<IO>>>
+) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
@@ -124,27 +106,24 @@ fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
     }
 }
 
-fn setup_inner(
-    fd: RawFd,
-    conn: Connection,
-) -> Result<(CryptoInfo, CryptoInfo), UnrecoverableError> {
+fn setup_inner(fd: RawFd, conn: Connection) -> Result<(CryptoInfo, CryptoInfo), Error> {
     let cipher_suite = match conn.negotiated_cipher_suite() {
         Some(cipher_suite) => cipher_suite,
         None => {
-            return Err(UnrecoverableError::NoNegotiatedCipherSuite);
+            return Err(Error::NoNegotiatedCipherSuite);
         }
     };
 
     let secrets = match conn.extract_secrets() {
         Ok(secrets) => secrets,
-        Err(err) => return Err(UnrecoverableError::ExportSecrets(err)),
+        Err(err) => return Err(Error::ExportSecrets(err)),
     };
 
     let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
     let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
 
     if let Err(err) = ffi::setup_ulp(fd) {
-        return Err(UnrecoverableError::UlpError(err));
+        return Err(Error::UlpError(err));
     };
 
     Ok((tx, rx))
