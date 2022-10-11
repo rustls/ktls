@@ -1,5 +1,5 @@
 use ffi::{setup_tls_info, KtlsCompatibilityError};
-use rustls::ConnectionCommon;
+use rustls::Connection;
 use std::{
     os::unix::{io::AsRawFd, prelude::RawFd},
     pin::Pin,
@@ -24,23 +24,25 @@ pub enum Error<IO> {
 
 #[derive(thiserror::Error, Debug)]
 pub enum RecoverableError {
-    #[error("failed to export secrets")]
-    ExportSecrets(rustls::Error),
-
-    #[error("no negotiated cipher suite: call config_ktls_* only /after/ the handshake")]
-    NoNegotiatedCipherSuite,
-
-    #[error("kTLS compatibility error: {0}")]
-    KtlsCompatibility(#[from] KtlsCompatibilityError),
-
-    #[error("failed to enable TLS ULP (upper level protocol): {0}")]
-    UlpError(std::io::Error),
+    // TODO: some errors are recoverable, make them so
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum UnrecoverableError {
+    #[error("failed to enable TLS ULP (upper level protocol): {0}")]
+    UlpError(std::io::Error),
+
+    #[error("kTLS compatibility error: {0}")]
+    KtlsCompatibility(#[from] KtlsCompatibilityError),
+
+    #[error("failed to export secrets")]
+    ExportSecrets(rustls::Error),
+
     #[error("failed to configure tx/rx (unsupported cipher?): {0}")]
     TlsCryptoInfoError(std::io::Error),
+
+    #[error("no negotiated cipher suite: call config_ktls_* only /after/ the handshake")]
+    NoNegotiatedCipherSuite,
 }
 
 /// Configure kTLS for this socket. If this call succeeds, data can be
@@ -55,19 +57,19 @@ pub fn config_ktls_server<IO>(
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
-    let (io, conn) = stream.get_ref();
+    let drained = drain(&mut stream);
+
+    let (io, conn) = stream.into_inner();
     let fd = io.as_raw_fd();
 
-    let (tx, rx) = match setup_inner(fd, conn) {
+    let (tx, rx) = match setup_inner(fd, Connection::Server(conn)) {
         Ok(pair) => pair,
-        Err(e) => return Err(Error::Recoverable(stream, e)),
+        Err(e) => return Err(e.into()),
     };
 
-    let drained = drain(&mut stream);
     setup_tls_info(fd, ffi::Direction::Tx, tx)?;
     setup_tls_info(fd, ffi::Direction::Rx, rx)?;
 
-    let (io, _conn) = stream.into_inner();
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -83,19 +85,23 @@ pub fn config_ktls_client<IO>(
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
-    let (io, conn) = stream.get_ref();
+    // TODO: before draining the stream:
+    // 1) check cipher compability
+    // 2) try setting up ULP
+    // 2) try setting up TX with zero credentials (undo correctly if that fails)
+    let drained = drain(&mut stream);
+
+    let (io, conn) = stream.into_inner();
     let fd = io.as_raw_fd();
 
-    let (tx, rx) = match setup_inner(fd, conn) {
+    let (tx, rx) = match setup_inner(fd, Connection::Client(conn)) {
         Ok(pair) => pair,
-        Err(e) => return Err(Error::Recoverable(stream, e)),
+        Err(e) => return Err(e.into()),
     };
 
-    let drained = drain(&mut stream);
     setup_tls_info(fd, ffi::Direction::Tx, tx)?;
     setup_tls_info(fd, ffi::Direction::Rx, rx)?;
 
-    let (io, _conn) = stream.into_inner();
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -118,27 +124,27 @@ fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
     }
 }
 
-fn setup_inner<Data>(
+fn setup_inner(
     fd: RawFd,
-    conn: &ConnectionCommon<Data>,
-) -> Result<(CryptoInfo, CryptoInfo), RecoverableError> {
+    conn: Connection,
+) -> Result<(CryptoInfo, CryptoInfo), UnrecoverableError> {
     let cipher_suite = match conn.negotiated_cipher_suite() {
         Some(cipher_suite) => cipher_suite,
         None => {
-            return Err(RecoverableError::NoNegotiatedCipherSuite);
+            return Err(UnrecoverableError::NoNegotiatedCipherSuite);
         }
     };
 
     let secrets = match conn.extract_secrets() {
         Ok(secrets) => secrets,
-        Err(err) => return Err(RecoverableError::ExportSecrets(err)),
+        Err(err) => return Err(UnrecoverableError::ExportSecrets(err)),
     };
 
     let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
     let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
 
     if let Err(err) = ffi::setup_ulp(fd) {
-        return Err(RecoverableError::UlpError(err));
+        return Err(UnrecoverableError::UlpError(err));
     };
 
     Ok((tx, rx))
