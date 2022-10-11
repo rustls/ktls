@@ -44,14 +44,8 @@ where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     let drained = drain(&mut stream);
-
     let (io, conn) = stream.into_inner();
-    let fd = io.as_raw_fd();
-
-    let (tx, rx) = setup_inner(fd, Connection::Server(conn))?;
-    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
-    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
-
+    setup_inner(io.as_raw_fd(), Connection::Server(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -67,23 +61,9 @@ pub fn config_ktls_client<IO>(
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
-    // TODO: before draining the stream:
-    // 1) check cipher compability
-    // 2) try setting up ULP
-    // 2) try setting up TX with zero credentials (undo correctly if that fails)
     let drained = drain(&mut stream);
-
     let (io, conn) = stream.into_inner();
-    let fd = io.as_raw_fd();
-
-    let (tx, rx) = match setup_inner(fd, Connection::Client(conn)) {
-        Ok(pair) => pair,
-        Err(e) => return Err(e.into()),
-    };
-
-    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
-    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
-
+    setup_inner(io.as_raw_fd(), Connection::Client(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -106,7 +86,7 @@ fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
     }
 }
 
-fn setup_inner(fd: RawFd, conn: Connection) -> Result<(CryptoInfo, CryptoInfo), Error> {
+fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
     let cipher_suite = match conn.negotiated_cipher_suite() {
         Some(cipher_suite) => cipher_suite,
         None => {
@@ -119,12 +99,15 @@ fn setup_inner(fd: RawFd, conn: Connection) -> Result<(CryptoInfo, CryptoInfo), 
         Err(err) => return Err(Error::ExportSecrets(err)),
     };
 
-    let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
-    let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
-
     if let Err(err) = ffi::setup_ulp(fd) {
         return Err(Error::UlpError(err));
     };
 
-    Ok((tx, rx))
+    let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
+    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
+
+    let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
+    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
+
+    Ok(())
 }
