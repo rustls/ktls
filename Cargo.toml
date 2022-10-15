@@ -20,8 +20,8 @@ git = "https://github.com/hapsoc/ktls-sys"
 rev = "798466d"
 
 [patch.crates-io]
-rustls = { git = "https://github.com/hapsoc/rustls", rev = "6ad803c" }
 # rustls = { path = "../rustls/rustls" }
+rustls = { git = "https://github.com/rustls/rustls", rev = "a981f0914eb517788a09f3e764fe64f527e0181e" }
 
 [dev-dependencies]
 rcgen = "0.10.0"
