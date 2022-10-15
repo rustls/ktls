@@ -6,10 +6,10 @@ use rustls::{
     AlertDescription, ConnectionTrafficSecrets, SupportedCipherSuite,
 };
 
-const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
+pub(crate) const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_2_VERSION_MINOR & 0xFF) as u16);
 
-const TLS_1_3_VERSION_NUMBER: u16 = (((ktls::TLS_1_3_VERSION_MAJOR & 0xFF) as u16) << 8)
+pub(crate) const TLS_1_3_VERSION_NUMBER: u16 = (((ktls::TLS_1_3_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_3_VERSION_MINOR & 0xFF) as u16);
 
 /// `setsockopt` level constant: TCP
@@ -181,14 +181,10 @@ impl CryptoInfo {
     }
 }
 
-pub fn setup_tls_info(
-    fd: RawFd,
-    dir: Direction,
-    info: CryptoInfo,
-) -> Result<(), crate::UnrecoverableError> {
+pub fn setup_tls_info(fd: RawFd, dir: Direction, info: CryptoInfo) -> Result<(), crate::Error> {
     let ret = unsafe { libc::setsockopt(fd, SOL_TLS, dir.into(), info.as_ptr(), info.size() as _) };
     if ret < 0 {
-        return Err(crate::UnrecoverableError::TlsCryptoInfoError(
+        return Err(crate::Error::TlsCryptoInfoError(
             std::io::Error::last_os_error(),
         ));
     }
