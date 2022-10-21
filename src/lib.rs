@@ -1,4 +1,5 @@
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
+use futures::future::try_join_all;
 use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
 use smallvec::SmallVec;
 use std::{
@@ -42,8 +43,6 @@ impl CompatibleCiphers {
         let ln = TcpListener::bind("0.0.0.0:0").await?;
         let local_addr = ln.local_addr()?;
 
-        // socks to the ln
-        let mut socks: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
         // Accepted conns of ln
         let mut accepted_conns: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
 
@@ -55,18 +54,28 @@ impl CompatibleCiphers {
             }
         };
 
-        let create_connect_fut = async {
-            for _ in 0..Self::CIPHERS_COUNT {
-                socks.push(TcpStream::connect(local_addr).await?);
-            }
+        let create_connections_fut =
+            try_join_all((0..Self::CIPHERS_COUNT).map(|_| TcpStream::connect(local_addr)));
 
-            io::Result::Ok(())
-        };
+        let socks = tokio::select! {
+            // Use biased here to optimize performance.
+            //
+            // With biased, tokio::select! would first poll create_connections_fut,
+            // which would poll all `TcpStream::connect` futures and establish
+            // connections to `ln` then returns `Poll::Pending`.
+            //
+            // Then accept_conns_fut would be polled, which accepts all pending
+            // connections, wake up create_connections_fut then returns
+            // `Poll::Pending`.
+            //
+            // Finally, create_connections_fut wakes up and all connections
+            // are ready, the result is collected into a Vec and ends
+            // the tokio::select!.
+            biased;
 
-        tokio::select! {
+            res = create_connections_fut => res?,
             _ = accept_conns_fut => unreachable!(),
-            res = create_connect_fut => res?,
-        }
+        };
 
         ciphers.test_ciphers((&*socks).try_into().unwrap());
 
