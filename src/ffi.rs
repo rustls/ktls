@@ -206,7 +206,7 @@ impl<const N: usize> Cmsg<N> {
     fn new(level: i32, typ: i32, data: [u8; N]) -> Self {
         Self {
             hdr: libc::cmsghdr {
-                cmsg_len: (memoffset::offset_of!(Self, data) + N) as _,
+                cmsg_len: memoffset::offset_of!(Self, data) + N,
                 cmsg_level: level,
                 cmsg_type: typ,
             },
