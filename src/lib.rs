@@ -1,13 +1,15 @@
-use ffi::{setup_tls_info, KtlsCompatibilityError};
+use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
+use futures::future::try_join_all;
 use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
+use smallvec::SmallVec;
 use std::{
-    io::Read,
-    net::{SocketAddr, TcpListener},
-    os::unix::{
-        io::AsRawFd,
-        prelude::{FromRawFd, RawFd},
-    },
+    io,
+    os::unix::prelude::{AsRawFd, RawFd},
     pin::Pin,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpStream},
 };
 
 mod ffi;
@@ -15,8 +17,6 @@ use crate::ffi::CryptoInfo;
 
 mod ktls_stream;
 pub use ktls_stream::KtlsStream;
-
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(Debug, Default)]
 pub struct CompatibleCiphers {
@@ -32,59 +32,92 @@ pub struct CompatibleCiphersForVersion {
 }
 
 impl CompatibleCiphers {
+    const CIPHERS_COUNT: usize = 6;
+
     /// List compatible ciphers. This listens on a TCP socket and blocks for a
     /// little while. Do once at the very start of a program. Should probably be
     /// behind a lazy_static / once_cell
-    pub fn new() -> Self {
+    pub async fn new() -> io::Result<Self> {
         let mut ciphers = CompatibleCiphers::default();
 
-        let ln = TcpListener::bind("0.0.0.0:0").unwrap();
-        let local_addr = ln.local_addr().unwrap();
+        let ln = TcpListener::bind("0.0.0.0:0").await?;
+        let local_addr = ln.local_addr()?;
 
-        let ln_fd = ln.as_raw_fd();
-        // this should close the listener on drop
-        let _guard = unsafe { std::fs::File::from_raw_fd(ln_fd) };
+        // Accepted conns of ln
+        let mut accepted_conns: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
 
-        std::thread::spawn(move || {
-            while let Ok((mut sock, _addr)) = ln.accept() {
-                let mut buf = Vec::new();
-                sock.read_to_end(&mut buf).unwrap();
-            }
-        });
-
-        let test_cipher = |cipher_suite: SupportedCipherSuite, field: &mut bool| {
-            if sample_cipher_setup(local_addr, cipher_suite).is_ok() {
-                *field = true;
+        let accept_conns_fut = async {
+            loop {
+                if let Ok((conn, _addr)) = ln.accept().await {
+                    accepted_conns.push(conn);
+                }
             }
         };
 
-        test_cipher(
-            rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
-            &mut ciphers.tls13.aes_gcm_128,
-        );
-        test_cipher(
-            rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
-            &mut ciphers.tls13.aes_gcm_256,
-        );
-        test_cipher(
-            rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-            &mut ciphers.tls13.chacha20_poly1305,
-        );
+        let create_connections_fut =
+            try_join_all((0..Self::CIPHERS_COUNT).map(|_| TcpStream::connect(local_addr)));
 
-        test_cipher(
-            rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            &mut ciphers.tls12.aes_gcm_128,
-        );
-        test_cipher(
-            rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-            &mut ciphers.tls12.aes_gcm_256,
-        );
-        test_cipher(
-            rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-            &mut ciphers.tls12.chacha20_poly1305,
-        );
+        let socks = tokio::select! {
+            // Use biased here to optimize performance.
+            //
+            // With biased, tokio::select! would first poll create_connections_fut,
+            // which would poll all `TcpStream::connect` futures and requests
+            // new connections to `ln` then returns `Poll::Pending`.
+            //
+            // Then accept_conns_fut would be polled, which accepts all pending
+            // connections, wake up create_connections_fut then returns
+            // `Poll::Pending`.
+            //
+            // Finally, create_connections_fut wakes up and all connections
+            // are ready, the result is collected into a Vec and ends
+            // the tokio::select!.
+            biased;
+
+            res = create_connections_fut => res?,
+            _ = accept_conns_fut => unreachable!(),
+        };
+
+        ciphers.test_ciphers((&*socks).try_into().unwrap());
+
+        Ok(ciphers)
+    }
+
+    fn test_ciphers(&mut self, socks: &[TcpStream; Self::CIPHERS_COUNT]) {
+        let ciphers = [
+            (
+                rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+                &mut self.tls13.aes_gcm_128,
+            ),
+            (
+                rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
+                &mut self.tls13.aes_gcm_256,
+            ),
+            (
+                rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+                &mut self.tls13.chacha20_poly1305,
+            ),
+            (
+                rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                &mut self.tls12.aes_gcm_128,
+            ),
+            (
+                rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                &mut self.tls12.aes_gcm_256,
+            ),
+            (
+                rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                &mut self.tls12.chacha20_poly1305,
+            ),
+        ];
+
+        assert_eq!(ciphers.len(), Self::CIPHERS_COUNT);
 
         ciphers
+            .into_iter()
+            .zip(socks)
+            .for_each(|((cipher_suite, field), sock)| {
+                *field = sample_cipher_setup(sock, cipher_suite).is_ok();
+            });
     }
 
     /// Returns true if we're reasonably confident that functions like
@@ -102,7 +135,7 @@ impl CompatibleCiphers {
     }
 }
 
-fn sample_cipher_setup(addr: SocketAddr, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
+fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
     let bulk_algo = match cipher_suite {
         SupportedCipherSuite::Tls12(suite) => &suite.common.bulk,
         SupportedCipherSuite::Tls13(suite) => &suite.common.bulk,
@@ -127,10 +160,9 @@ fn sample_cipher_setup(addr: SocketAddr, cipher_suite: SupportedCipherSuite) -> 
     let seq_secrets = (0, zero_secrets);
     let info = CryptoInfo::from_rustls(cipher_suite, seq_secrets).unwrap();
 
-    let sock = std::net::TcpStream::connect(addr).unwrap();
     let fd = sock.as_raw_fd();
 
-    ffi::setup_ulp(fd).map_err(Error::UlpError)?;
+    setup_ulp(fd).map_err(Error::UlpError)?;
 
     setup_tls_info(fd, ffi::Direction::Tx, info)?;
 
@@ -140,16 +172,16 @@ fn sample_cipher_setup(addr: SocketAddr, cipher_suite: SupportedCipherSuite) -> 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("failed to enable TLS ULP (upper level protocol): {0}")]
-    UlpError(std::io::Error),
+    UlpError(#[source] std::io::Error),
 
     #[error("kTLS compatibility error: {0}")]
     KtlsCompatibility(#[from] KtlsCompatibilityError),
 
     #[error("failed to export secrets")]
-    ExportSecrets(rustls::Error),
+    ExportSecrets(#[source] rustls::Error),
 
     #[error("failed to configure tx/rx (unsupported cipher?): {0}")]
-    TlsCryptoInfoError(std::io::Error),
+    TlsCryptoInfoError(#[source] std::io::Error),
 
     #[error("no negotiated cipher suite: call config_ktls_* only /after/ the handshake")]
     NoNegotiatedCipherSuite,

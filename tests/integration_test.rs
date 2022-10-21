@@ -23,7 +23,22 @@ const SERVER_PAYLOAD: &[u8] = b"this is the server speaking\n";
 
 #[tokio::test]
 async fn compatible_ciphers() {
-    let cc = ktls::CompatibleCiphers::new();
+    let cc = ktls::CompatibleCiphers::new().await.unwrap();
+    for suite in [
+        rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+        rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
+        rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    ] {
+        assert!(cc.is_compatible(&suite));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn compatible_ciphers_single_thread() {
+    let cc = ktls::CompatibleCiphers::new().await.unwrap();
     for suite in [
         rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
         rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
