@@ -61,8 +61,8 @@ impl CompatibleCiphers {
             // Use biased here to optimize performance.
             //
             // With biased, tokio::select! would first poll create_connections_fut,
-            // which would poll all `TcpStream::connect` futures and establish
-            // connections to `ln` then returns `Poll::Pending`.
+            // which would poll all `TcpStream::connect` futures and requests
+            // new connections to `ln` then returns `Poll::Pending`.
             //
             // Then accept_conns_fut would be polled, which accepts all pending
             // connections, wake up create_connections_fut then returns
