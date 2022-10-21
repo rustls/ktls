@@ -14,18 +14,19 @@ pin_project_lite::pin_project! {
         drained: Option<(usize, Vec<u8>)>,
     }
 
-    impl<IO> PinnedDrop for KtlsStream<IO>
-    where
-        IO: AsRawFd
-    {
-        fn drop(this: Pin<&mut Self>) {
-            if !this.close_notified {
-                // can't do much on error here. also no point in setting
-                // close_notified, because we're about to drop the stream anyway.
-                _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
-            }
-        }
-    }
+    // FIXME: can't have `into_raw` AND implement drop, gotta pick one
+    // impl<IO> PinnedDrop for KtlsStream<IO>
+    // where
+    //     IO: AsRawFd
+    // {
+    //     fn drop(this: Pin<&mut Self>) {
+    //         if !this.close_notified {
+    //             // can't do much on error here. also no point in setting
+    //             // close_notified, because we're about to drop the stream anyway.
+    //             _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
+    //         }
+    //     }
+    // }
 }
 
 impl<IO> KtlsStream<IO>
@@ -38,6 +39,11 @@ where
             close_notified: false,
             drained: drained.map(|drained| (0, drained)),
         }
+    }
+
+    /// Return the drained data + the original I/O
+    pub fn into_raw(self) -> (Option<Vec<u8>>, IO) {
+        (self.drained.map(|(_, drained)| drained), self.inner)
     }
 }
 
