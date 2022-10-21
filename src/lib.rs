@@ -4,7 +4,6 @@ use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
 use smallvec::SmallVec;
 use std::{
     io,
-    net::SocketAddr,
     os::unix::prelude::{AsRawFd, RawFd},
     pin::Pin,
 };
@@ -47,37 +46,21 @@ impl CompatibleCiphers {
         // socks to the ln
         let mut socks: ArrayVec<TcpStream, { Self::CIPHERS_COUNT }> = ArrayVec::new();
         // Accepted conns of ln
-        let mut accepted_conns: ArrayVec<TcpStream, { Self::CIPHERS_COUNT }> = ArrayVec::new();
-
-        let mut new_accepted_conns: SmallVec<[(TcpStream, SocketAddr); 8]> = SmallVec::new();
+        let mut accepted_conns: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
 
         for _ in 0..Self::CIPHERS_COUNT {
-            async fn accept_conns(
-                ln: &TcpListener,
-                new_accepted_conns: &mut SmallVec<[(TcpStream, SocketAddr); 8]>,
-            ) {
+            let accept_conns = async {
                 loop {
-                    if let Ok(conn) = ln.accept().await {
-                        new_accepted_conns.push(conn);
+                    if let Ok((conn, _addr)) = ln.accept().await {
+                        accepted_conns.push(conn);
                     }
                 }
-            }
-
-            let sock = tokio::select! {
-                _ = accept_conns(&ln, &mut new_accepted_conns) => unreachable!(),
-                res = TcpStream::connect(local_addr) => res?,
             };
 
-            // Filter out new_accepted_conns
-            let addr = sock.local_addr()?;
-
-            accepted_conns.extend(
-                new_accepted_conns
-                    .drain(0..new_accepted_conns.len())
-                    .filter_map(|(new_accepted_conn, remote_addr)| {
-                        (remote_addr == addr).then_some(new_accepted_conn)
-                    }),
-            );
+            let sock = tokio::select! {
+                _ = accept_conns => unreachable!(),
+                res = TcpStream::connect(local_addr) => res?,
+            };
 
             socks.push(sock);
         }
