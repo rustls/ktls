@@ -43,15 +43,11 @@ impl CompatibleCiphers {
         let local_addr = ln.local_addr()?;
 
         async fn accept_conns(ln: TcpListener) {
-            let mut conns: [Option<TcpStream>; 8] =
-                [None, None, None, None, None, None, None, None];
-
-            let mut i = 0;
+            let mut conns = Vec::with_capacity(8);
 
             loop {
                 if let Ok((sock, _addr)) = ln.accept().await {
-                    conns[i] = Some(sock);
-                    i = (i + 1) % conns.len();
+                    conns.push(sock);
                 }
             }
         }
