@@ -8,8 +8,8 @@ See <https://github.com/hapsoc/ktls> for a higher-level / safer interface.
 
 ## Status
 
-[![test pipeline](https://github.com/hapsoc/hring/actions/workflows/test.yml/badge.svg)](https://github.com/hapsoc/hring/actions/workflows/test.yml?query=branch%3Amain)
-[![Coverage Status (codecov.io)](https://codecov.io/gh/hapsoc/hring/branch/main/graph/badge.svg)](https://codecov.io/gh/hapsoc/hring/)
+[![test pipeline](https://github.com/hapsoc/ktls-sys/actions/workflows/test.yml/badge.svg)](https://github.com/hapsoc/ktls-sys/actions/workflows/test.yml?query=branch%3Amain)
+[![Coverage Status (codecov.io)](https://codecov.io/gh/hapsoc/ktls-sys/branch/main/graph/badge.svg)](https://codecov.io/gh/hapsoc/ktls-sys/)
 
 ## License
 
