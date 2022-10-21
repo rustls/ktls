@@ -1,6 +1,6 @@
 name: test
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   test:
@@ -17,5 +17,5 @@ jobs:
           cd ${{ github.workspace }}
           sccache --zero-stats
           cargo clippy
-          just test
+          just ci-test
           sccache --show-stats
