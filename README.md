@@ -13,5 +13,7 @@ https://github.com/hapsoc/rustls to export all the relevant secrets.
 
 ## License
 
-This repository is released under the MIT license. See [LICENSE](./LICENSE) for
-details.
+This project is primarily distributed under the terms of both the MIT license
+and the Apache License (Version 2.0).
+
+See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
