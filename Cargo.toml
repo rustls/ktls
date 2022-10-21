@@ -9,7 +9,6 @@ thiserror = "1.0.37"
 tracing = "0.1.36"
 tokio-rustls = "0.23.4"
 rustls = { version = "0.20.6", features = ["secret_extraction"] }
-arrayvec = "0.7.2"
 smallvec = "1.10.0"
 memoffset = "0.6.5"
 pin-project-lite = "0.2.9"
