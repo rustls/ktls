@@ -176,9 +176,6 @@ fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> 
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("failed to connect to the tcp socket: {0}")]
-    ConnectionError(#[source] std::io::Error),
-
     #[error("failed to enable TLS ULP (upper level protocol): {0}")]
     UlpError(#[source] std::io::Error),
 
