@@ -1,10 +1,9 @@
+use arrayvec::ArrayVec;
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
-use futures::future::join_all;
+use futures::future::{join_all, try_join};
 use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
-use scopeguard::guard;
 use std::{
     io,
-    net::SocketAddr,
     os::unix::prelude::{AsRawFd, RawFd},
     pin::Pin,
 };
@@ -33,6 +32,8 @@ pub struct CompatibleCiphersForVersion {
 }
 
 impl CompatibleCiphers {
+    const CIPHERS_COUNT: usize = 6;
+
     /// List compatible ciphers. This listens on a TCP socket and blocks for a
     /// little while. Do once at the very start of a program. Should probably be
     /// behind a lazy_static / once_cell
@@ -42,66 +43,81 @@ impl CompatibleCiphers {
         let ln = TcpListener::bind("0.0.0.0:0").await?;
         let local_addr = ln.local_addr()?;
 
-        async fn accept_conns(ln: TcpListener) {
-            let mut conns = Vec::with_capacity(8);
+        // socks to the ln
+        let mut socks: ArrayVec<TcpStream, { Self::CIPHERS_COUNT }> = ArrayVec::new();
+        // Accepted conns of ln
+        let mut accepted_conns: ArrayVec<TcpStream, { Self::CIPHERS_COUNT }> = ArrayVec::new();
 
-            loop {
-                if let Ok((sock, _addr)) = ln.accept().await {
-                    conns.push(sock);
+        try_join(
+            async {
+                for _ in 0..Self::CIPHERS_COUNT {
+                    socks.push(TcpStream::connect(local_addr).await?);
                 }
-            }
-        }
 
-        // Must spawn it, using futures::join! or futures::future::join here
-        // will block the process forever.
-        let _task_guard = guard(tokio::spawn(accept_conns(ln)), |task| task.abort());
+                io::Result::Ok(())
+            },
+            async {
+                loop {
+                    if let Ok((sock, _addr)) = ln.accept().await {
+                        accepted_conns.push(sock);
+                    }
+                }
 
-        ciphers.test_ciphers(local_addr).await;
+                #[allow(unreachable_code)]
+                io::Result::Ok(())
+            },
+        )
+        .await?;
+
+        ciphers.test_ciphers((&*socks).try_into().unwrap()).await;
 
         Ok(ciphers)
     }
 
-    async fn test_ciphers(&mut self, local_addr: SocketAddr) {
+    async fn test_ciphers(&mut self, socks: &[TcpStream; Self::CIPHERS_COUNT]) {
         async fn test_cipher(
             cipher_suite: SupportedCipherSuite,
             field: &mut bool,
-            local_addr: SocketAddr,
+            sock: &TcpStream,
         ) {
-            *field = sample_cipher_setup(local_addr, cipher_suite).await.is_ok()
+            *field = sample_cipher_setup(sock, cipher_suite).await.is_ok()
         }
 
-        join_all([
-            test_cipher(
+        let ciphers = [
+            (
                 rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
                 &mut self.tls13.aes_gcm_128,
-                local_addr,
             ),
-            test_cipher(
+            (
                 rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
                 &mut self.tls13.aes_gcm_256,
-                local_addr,
             ),
-            test_cipher(
+            (
                 rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
                 &mut self.tls13.chacha20_poly1305,
-                local_addr,
             ),
-            test_cipher(
+            (
                 rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
                 &mut self.tls12.aes_gcm_128,
-                local_addr,
             ),
-            test_cipher(
+            (
                 rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
                 &mut self.tls12.aes_gcm_256,
-                local_addr,
             ),
-            test_cipher(
+            (
                 rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
                 &mut self.tls12.chacha20_poly1305,
-                local_addr,
             ),
-        ])
+        ];
+
+        assert_eq!(ciphers.len(), Self::CIPHERS_COUNT);
+
+        join_all(
+            ciphers
+                .into_iter()
+                .zip(socks)
+                .map(|((cipher_suite, field), sock)| test_cipher(cipher_suite, field, sock)),
+        )
         .await;
     }
 
@@ -121,7 +137,7 @@ impl CompatibleCiphers {
 }
 
 async fn sample_cipher_setup(
-    addr: SocketAddr,
+    sock: &TcpStream,
     cipher_suite: SupportedCipherSuite,
 ) -> Result<(), Error> {
     let bulk_algo = match cipher_suite {
@@ -148,9 +164,6 @@ async fn sample_cipher_setup(
     let seq_secrets = (0, zero_secrets);
     let info = CryptoInfo::from_rustls(cipher_suite, seq_secrets).unwrap();
 
-    let sock = TcpStream::connect(addr)
-        .await
-        .map_err(Error::ConnectionError)?;
     let fd = sock.as_raw_fd();
 
     setup_ulp(fd).map_err(Error::UlpError)?;
