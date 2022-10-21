@@ -13,7 +13,7 @@ rustls = { version = "0.20.6", features = ["secret_extraction"] }
 arrayvec = "0.7.2"
 memoffset = "0.6.5"
 pin-project-lite = "0.2.9"
-tokio = { version = "1.21.2", features = ["net", "rt"] }
+tokio = { version = "1.21.2", features = ["net", "rt", "macros"] }
 futures = "0.3.24"
 
 [dependencies.ktls-sys]
