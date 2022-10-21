@@ -1,4 +1,3 @@
-use arrayvec::ArrayVec;
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
 use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
 use smallvec::SmallVec;
@@ -44,7 +43,7 @@ impl CompatibleCiphers {
         let local_addr = ln.local_addr()?;
 
         // socks to the ln
-        let mut socks: ArrayVec<TcpStream, { Self::CIPHERS_COUNT }> = ArrayVec::new();
+        let mut socks: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
         // Accepted conns of ln
         let mut accepted_conns: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
 
