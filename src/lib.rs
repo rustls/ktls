@@ -1,9 +1,11 @@
 use arrayvec::ArrayVec;
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
-use futures::future::{join_all, try_join};
+use futures::future::join_all;
 use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
+use smallvec::SmallVec;
 use std::{
     io,
+    net::SocketAddr,
     os::unix::prelude::{AsRawFd, RawFd},
     pin::Pin,
 };
@@ -48,26 +50,38 @@ impl CompatibleCiphers {
         // Accepted conns of ln
         let mut accepted_conns: ArrayVec<TcpStream, { Self::CIPHERS_COUNT }> = ArrayVec::new();
 
-        try_join(
-            async {
-                for _ in 0..Self::CIPHERS_COUNT {
-                    socks.push(TcpStream::connect(local_addr).await?);
-                }
+        let mut new_accepted_conns: SmallVec<[(TcpStream, SocketAddr); 8]> = SmallVec::new();
 
-                io::Result::Ok(())
-            },
-            async {
+        for _ in 0..Self::CIPHERS_COUNT {
+            async fn accept_conns(
+                ln: &TcpListener,
+                new_accepted_conns: &mut SmallVec<[(TcpStream, SocketAddr); 8]>,
+            ) {
                 loop {
-                    if let Ok((sock, _addr)) = ln.accept().await {
-                        accepted_conns.push(sock);
+                    if let Ok(conn) = ln.accept().await {
+                        new_accepted_conns.push(conn);
                     }
                 }
+            }
 
-                #[allow(unreachable_code)]
-                io::Result::Ok(())
-            },
-        )
-        .await?;
+            let sock = tokio::select! {
+                _ = accept_conns(&ln, &mut new_accepted_conns) => unreachable!(),
+                res = TcpStream::connect(local_addr) => res?,
+            };
+
+            // Filter out new_accepted_conns
+            let addr = sock.local_addr()?;
+
+            accepted_conns.extend(
+                new_accepted_conns
+                    .drain(0..new_accepted_conns.len())
+                    .filter_map(|(new_accepted_conn, remote_addr)| {
+                        (remote_addr == addr).then_some(new_accepted_conn)
+                    }),
+            );
+
+            socks.push(sock);
+        }
 
         ciphers.test_ciphers((&*socks).try_into().unwrap()).await;
 
