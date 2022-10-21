@@ -48,21 +48,25 @@ impl CompatibleCiphers {
         // Accepted conns of ln
         let mut accepted_conns: SmallVec<[TcpStream; Self::CIPHERS_COUNT]> = SmallVec::new();
 
-        for _ in 0..Self::CIPHERS_COUNT {
-            let accept_conns = async {
-                loop {
-                    if let Ok((conn, _addr)) = ln.accept().await {
-                        accepted_conns.push(conn);
-                    }
+        let accept_conns_fut = async {
+            loop {
+                if let Ok((conn, _addr)) = ln.accept().await {
+                    accepted_conns.push(conn);
                 }
-            };
+            }
+        };
 
-            let sock = tokio::select! {
-                _ = accept_conns => unreachable!(),
-                res = TcpStream::connect(local_addr) => res?,
-            };
+        let create_connect_fut = async {
+            for _ in 0..Self::CIPHERS_COUNT {
+                socks.push(TcpStream::connect(local_addr).await?);
+            }
 
-            socks.push(sock);
+            io::Result::Ok(())
+        };
+
+        tokio::select! {
+            _ = accept_conns_fut => unreachable!(),
+            res = create_connect_fut => res?,
         }
 
         ciphers.test_ciphers((&*socks).try_into().unwrap());
