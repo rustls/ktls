@@ -1,6 +1,5 @@
 use arrayvec::ArrayVec;
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
-use futures::future::join_all;
 use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
 use smallvec::SmallVec;
 use std::{
@@ -83,20 +82,12 @@ impl CompatibleCiphers {
             socks.push(sock);
         }
 
-        ciphers.test_ciphers((&*socks).try_into().unwrap()).await;
+        ciphers.test_ciphers((&*socks).try_into().unwrap());
 
         Ok(ciphers)
     }
 
-    async fn test_ciphers(&mut self, socks: &[TcpStream; Self::CIPHERS_COUNT]) {
-        async fn test_cipher(
-            cipher_suite: SupportedCipherSuite,
-            field: &mut bool,
-            sock: &TcpStream,
-        ) {
-            *field = sample_cipher_setup(sock, cipher_suite).await.is_ok()
-        }
-
+    fn test_ciphers(&mut self, socks: &[TcpStream; Self::CIPHERS_COUNT]) {
         let ciphers = [
             (
                 rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
@@ -126,13 +117,12 @@ impl CompatibleCiphers {
 
         assert_eq!(ciphers.len(), Self::CIPHERS_COUNT);
 
-        join_all(
-            ciphers
-                .into_iter()
-                .zip(socks)
-                .map(|((cipher_suite, field), sock)| test_cipher(cipher_suite, field, sock)),
-        )
-        .await;
+        ciphers
+            .into_iter()
+            .zip(socks)
+            .for_each(|((cipher_suite, field), sock)| {
+                *field = sample_cipher_setup(sock, cipher_suite).is_ok();
+            });
     }
 
     /// Returns true if we're reasonably confident that functions like
@@ -150,10 +140,7 @@ impl CompatibleCiphers {
     }
 }
 
-async fn sample_cipher_setup(
-    sock: &TcpStream,
-    cipher_suite: SupportedCipherSuite,
-) -> Result<(), Error> {
+fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
     let bulk_algo = match cipher_suite {
         SupportedCipherSuite::Tls12(suite) => &suite.common.bulk,
         SupportedCipherSuite::Tls13(suite) => &suite.common.bulk,
