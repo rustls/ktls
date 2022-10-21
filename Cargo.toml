@@ -8,7 +8,6 @@ libc = "0.2.133"
 thiserror = "1.0.37"
 tracing = "0.1.36"
 tokio-rustls = "0.23.4"
-scopeguard = "1.1.0"
 rustls = { version = "0.20.6", features = ["secret_extraction"] }
 arrayvec = "0.7.2"
 smallvec = "1.10.0"
