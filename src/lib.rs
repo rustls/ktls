@@ -187,9 +187,10 @@ pub enum Error {
     NoNegotiatedCipherSuite,
 }
 
-/// Configure kTLS for this socket. If this call succeeds, data can be
-/// written and read from this socket, and the kernel takes care of encryption
-/// (and key updates, etc.) transparently.
+/// Configure kTLS for this socket. If this call succeeds, data can be written
+/// and read from this socket, and the kernel takes care of encryption
+/// transparently. I'm not clear how rekeying is handled (probably via control
+/// messages, but can't find a code sample for it).
 ///
 /// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
 /// to software encryption with rustls.
