@@ -45,6 +45,16 @@ where
     pub fn into_raw(self) -> (Option<Vec<u8>>, IO) {
         (self.drained.map(|(_, drained)| drained), self.inner)
     }
+
+    /// Returns a reference to the original I/O
+    pub fn get_ref(&self) -> &IO {
+        &self.inner
+    }
+
+    /// Returns a mut reference to the original I/O
+    pub fn get_mut(&mut self) -> &mut IO {
+        &mut self.inner
+    }
 }
 
 impl<IO> AsyncRead for KtlsStream<IO>
