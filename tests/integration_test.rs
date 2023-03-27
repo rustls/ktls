@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use const_random::const_random;
 use rcgen::generate_simple_self_signed;
 use rustls::{
     cipher_suite::{
@@ -18,8 +19,8 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
 
-const CLIENT_PAYLOAD: &[u8] = b"this is the client speaking\n";
-const SERVER_PAYLOAD: &[u8] = b"this is the server speaking\n";
+const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
+const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
 
 #[tokio::test]
 async fn compatible_ciphers() {
