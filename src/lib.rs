@@ -5,10 +5,9 @@ use smallvec::SmallVec;
 use std::{
     io,
     os::unix::prelude::{AsRawFd, RawFd},
-    pin::Pin,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     net::{TcpListener, TcpStream},
 };
 
@@ -186,6 +185,9 @@ pub enum Error {
     #[error("failed to configure tx/rx (unsupported cipher?): {0}")]
     TlsCryptoInfoError(#[source] std::io::Error),
 
+    #[error("an I/O occured while draining the rustls stream: {0}")]
+    DrainError(#[source] std::io::Error),
+
     #[error("no negotiated cipher suite: call config_ktls_* only /after/ the handshake")]
     NoNegotiatedCipherSuite,
 }
@@ -195,16 +197,16 @@ pub enum Error {
 /// transparently. I'm not clear how rekeying is handled (probably via control
 /// messages, but can't find a code sample for it).
 ///
-/// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
-/// to software encryption with rustls.
-pub fn config_ktls_server<IO>(
+/// The inner IO type must be wrapped in [CorkStream] since it's the only way
+/// to drain a rustls stream cleanly. See its documentation for details.
+pub async fn config_ktls_server<IO>(
     mut stream: tokio_rustls::server::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
-    let drained = drain(&mut stream);
+    let drained = drain(&mut stream).await.map_err(Error::DrainError)?;
     let (io, conn) = stream.into_inner();
     let io = io.io;
 
@@ -216,16 +218,16 @@ where
 /// written and read from this socket, and the kernel takes care of encryption
 /// (and key updates, etc.) transparently.
 ///
-/// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
-/// to software encryption with rustls.
-pub fn config_ktls_client<IO>(
+/// The inner IO type must be wrapped in [CorkStream] since it's the only way
+/// to drain a rustls stream cleanly. See its documentation for details.
+pub async fn config_ktls_client<IO>(
     mut stream: tokio_rustls::client::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
-    let drained = drain(&mut stream);
+    let drained = drain(&mut stream).await.map_err(Error::DrainError)?;
     let (io, conn) = stream.into_inner();
     let io = io.io;
 
@@ -235,52 +237,40 @@ where
 
 /// Read all the bytes we can read without blocking. This is used to drained the
 /// already-decrypted buffer from a tokio-rustls I/O type
-fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
+async fn drain(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<Vec<u8>>> {
     tracing::trace!("Draining rustls stream");
-
     let mut drained = vec![0u8; 128 * 1024];
-    let mut rb = ReadBuf::new(&mut drained[..]);
+    let mut filled = 0;
 
-    let noop_waker = futures::task::noop_waker();
-    let mut cx = std::task::Context::from_waker(&noop_waker);
-
-    let mut filled = rb.filled().len();
-    let mut stream = Pin::new(stream);
-
-    #[allow(clippy::while_let_loop)]
     loop {
-        match stream.as_mut().poll_read(&mut cx, &mut rb) {
-            std::task::Poll::Ready(_) => {
-                let new_filled = rb.filled().len();
-
-                if new_filled == filled {
-                    // EOF, already?
-                    tracing::debug!("EOF, stopping after having drained {filled} bytes");
-                    break;
-                } else {
-                    // keep going
-                    tracing::debug!(
-                        "drained {new_filled} bytes ({} read just now), continuing...",
-                        new_filled - filled
-                    );
-                    filled = new_filled;
-                }
-            }
-            _ => {
-                // this would block, so we're done
-                tracing::debug!("would block, stopping after having drained {filled}",);
+        tracing::trace!("stream.read called");
+        let n = match stream.read(&mut drained[filled..]).await {
+            Ok(n) => n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // actually this is expected for us!
                 break;
             }
+            Err(e) => {
+                tracing::trace!("stream.read returned error: {e}");
+                return Err(e);
+            }
+        };
+        tracing::trace!("stream.read returned {n}");
+        if n == 0 {
+            // that's what CorkStream returns when it's at a message boundary
+            break;
         }
+        filled += n;
     }
 
-    let filled_len = rb.filled().len();
-    if filled_len == 0 {
+    let maybe_drained = if filled == 0 {
         None
     } else {
-        drained.resize(filled_len, 0);
+        tracing::trace!("Draining rustls stream done: drained {filled} bytes");
+        drained.resize(filled, 0);
         Some(drained)
-    }
+    };
+    Ok(maybe_drained)
 }
 
 fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {

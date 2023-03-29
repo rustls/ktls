@@ -15,9 +15,26 @@ enum State {
     Passthrough,
 }
 
+/// This is a wrapper that reads TLS message headers so it knows when to start
+/// doing empty reads at the message boundary when "draining" a rustls
+/// connection before setting up kTLS for it.
+///
+/// The short explanation is: rustls might have buffered one or more
+/// ApplicationData messages (the last one might even be partial) by the time
+/// "connect" / "accept" returns.
+///
+/// We not only need to pop messages rustls has already deframed (that's done in
+/// a drain function elsewhere), but also let rustls finish reading and
+/// deframing any partial message it may have already buffered.
+///
+/// Because this wrapper is trying very hard not to do any error handling, if it
+/// encounters anything that doesn't look like a TLS header (unknown type,
+/// nonsensical size, unexpected EOF), it'll quite easily fall back to a
+/// "passthrough" mode with no internal buffering, letting rustls take care
+/// reporting any errors.
 pub struct CorkStream<IO> {
     pub io: IO,
-    // if true, causes empty reads
+    // if true, causes empty reads at the message boudnary
     pub corked: bool,
     state: State,
 }
@@ -54,7 +71,10 @@ where
             match state {
                 State::ReadHeader { header_buf, offset } => {
                     if *offset == 0 && this.corked {
-                        tracing::trace!("corked, returning empty read");
+                        tracing::trace!(
+                            "corked, returning empty read (but waking to prevent stalls)"
+                        );
+                        cx.waker().wake_by_ref();
                         return Poll::Ready(Ok(()));
                     }
 
@@ -64,14 +84,20 @@ where
                     {
                         let mut rest = ReadBuf::new(&mut header_buf[*offset..]);
                         futures::ready!(io.as_mut().poll_read(cx, &mut rest)?);
+                        *offset += rest.filled().len();
                         if rest.filled().is_empty() {
-                            tracing::trace!("eof!");
-                            // FIXME: this should still put what we've read so far
+                            // that's an unexpected EOF for sure, but let's have
+                            // rustls deal with the error reporting shall we?
+                            tracing::trace!(
+                                "unexpected EOF: header cut short after {} bytes",
+                                *offset
+                            );
+                            buf.put_slice(&header_buf[..*offset]);
+                            *state = State::Passthrough;
 
                             return Poll::Ready(Ok(()));
                         }
                         tracing::trace!("read {} bytes off of header", rest.filled().len());
-                        *offset += rest.filled().len();
                     }
 
                     if *offset == 5 {
