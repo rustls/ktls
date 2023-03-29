@@ -18,6 +18,9 @@ use crate::ffi::CryptoInfo;
 mod ktls_stream;
 pub use ktls_stream::KtlsStream;
 
+mod cork_stream;
+pub use cork_stream::CorkStream;
+
 #[derive(Debug, Default)]
 pub struct CompatibleCiphers {
     pub tls12: CompatibleCiphersForVersion,
@@ -195,13 +198,16 @@ pub enum Error {
 /// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
 /// to software encryption with rustls.
 pub fn config_ktls_server<IO>(
-    mut stream: tokio_rustls::server::TlsStream<IO>,
+    mut stream: tokio_rustls::server::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
+    stream.get_mut().0.corked = true;
     let drained = drain(&mut stream);
     let (io, conn) = stream.into_inner();
+    let io = io.io;
+
     setup_inner(io.as_raw_fd(), Connection::Server(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
@@ -213,13 +219,16 @@ where
 /// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
 /// to software encryption with rustls.
 pub fn config_ktls_client<IO>(
-    mut stream: tokio_rustls::client::TlsStream<IO>,
+    mut stream: tokio_rustls::client::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
+    stream.get_mut().0.corked = true;
     let drained = drain(&mut stream);
     let (io, conn) = stream.into_inner();
+    let io = io.io;
+
     setup_inner(io.as_raw_fd(), Connection::Client(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
@@ -227,6 +236,8 @@ where
 /// Read all the bytes we can read without blocking. This is used to drained the
 /// already-decrypted buffer from a tokio-rustls I/O type
 fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
+    tracing::trace!("Draining rustls stream");
+
     let mut drained = vec![0u8; 128 * 1024];
     let mut rb = ReadBuf::new(&mut drained[..]);
 

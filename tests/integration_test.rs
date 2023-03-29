@@ -5,6 +5,7 @@ use std::{
 };
 
 use const_random::const_random;
+use ktls::CorkStream;
 use rcgen::generate_simple_self_signed;
 use rustls::{
     cipher_suite::{
@@ -140,6 +141,7 @@ async fn server_test(
                 let (stream, addr) = ln.accept().await.unwrap();
                 debug!("Accepted TCP conn from {}", addr);
                 let stream = SpyStream(stream);
+                let stream = CorkStream::new(stream);
 
                 let stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
@@ -333,6 +335,7 @@ async fn client_test(
     let tls_connector = TlsConnector::from(Arc::new(client_config));
 
     let stream = TcpStream::connect(addr).await.unwrap();
+    let stream = CorkStream::new(stream);
 
     let stream = tls_connector
         .connect("localhost".try_into().unwrap(), stream)
