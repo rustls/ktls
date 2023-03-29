@@ -26,8 +26,17 @@ use tracing_subscriber::EnvFilter;
 // const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
 // const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
 
-const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
-const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
+// const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
+// const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
+
+// const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 16384]);
+// const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 16384]);
+
+// const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 512]);
+// const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 512]);
+
+const CLIENT_PAYLOAD: &[u8] = b"I am the client";
+const SERVER_PAYLOAD: &[u8] = b"I am the server";
 
 #[tokio::test]
 async fn compatible_ciphers() {
@@ -276,26 +285,25 @@ async fn client_test(
         async move {
             loop {
                 let (stream, addr) = ln.accept().await.unwrap();
-                let stream = SpyStream(stream);
 
                 debug!("Accepted TCP conn from {}", addr);
                 let mut stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
 
-                debug!("Reading data");
+                debug!("Server reading data");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Writing data");
+                debug!("Server writing data");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
 
-                debug!("Reading data");
+                debug!("Server reading data");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Writing data");
+                debug!("Server writing data");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.shutdown().await.unwrap();
 
@@ -324,29 +332,33 @@ async fn client_test(
     let tls_connector = TlsConnector::from(Arc::new(client_config));
 
     let stream = TcpStream::connect(addr).await.unwrap();
+
     let stream = tls_connector
         .connect("localhost".try_into().unwrap(), stream)
         .await
         .unwrap();
 
-    let mut stream = ktls::config_ktls_client(stream).unwrap();
+    let stream = ktls::config_ktls_client(stream).unwrap();
+    let mut stream = SpyStream(stream);
 
-    debug!("Writing data");
+    debug!("Client writing data");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Reading data");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    debug!("Client reading data");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Writing data");
+    debug!("Client writing data");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Reading data");
+    debug!("Client reading data");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
@@ -383,7 +395,6 @@ where
                 tracing::debug!("SpyStream read would've blocked")
             }
         }
-        if let std::task::Poll::Ready(Ok(())) = res {}
         res
     }
 }

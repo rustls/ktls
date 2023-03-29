@@ -244,6 +244,7 @@ fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
 
                 if new_filled == filled {
                     // EOF, already?
+                    tracing::debug!("EOF, stopping after having drained {filled} bytes");
                     break;
                 } else {
                     // keep going
@@ -256,10 +257,7 @@ fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
             }
             _ => {
                 // this would block, so we're done
-                tracing::debug!(
-                    "would block, stopping after having drained {} bytes",
-                    filled
-                );
+                tracing::debug!("would block, stopping after having drained {filled}",);
                 break;
             }
         }
