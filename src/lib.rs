@@ -264,8 +264,12 @@ fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
     }
 
     let filled_len = rb.filled().len();
-    drained.resize(filled_len, 0);
-    Some(drained)
+    if filled_len == 0 {
+        None
+    } else {
+        drained.resize(filled_len, 0);
+        Some(drained)
+    }
 }
 
 fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {

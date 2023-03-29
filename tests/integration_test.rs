@@ -252,8 +252,9 @@ async fn client_test(
     cipher_suite: SupportedCipherSuite,
 ) {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new("rustls=trace,debug"))
+        // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
         // .with_env_filter(EnvFilter::new("debug"))
+        .with_env_filter(EnvFilter::new("trace"))
         .pretty()
         .init();
 

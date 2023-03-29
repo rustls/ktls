@@ -68,6 +68,7 @@ where
         if let Some((drain_index, drained)) = this.drained.as_mut() {
             let drained = &drained[*drain_index..];
             let len = std::cmp::min(buf.remaining(), drained.len());
+
             tracing::trace!(%len, "KtlsStream::poll_read, can take from drain");
             buf.put_slice(&drained[..len]);
 
