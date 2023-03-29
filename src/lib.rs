@@ -227,20 +227,47 @@ where
 /// Read all the bytes we can read without blocking. This is used to drained the
 /// already-decrypted buffer from a tokio-rustls I/O type
 fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
-    let mut drained = vec![0u8; 16384];
+    let mut drained = vec![0u8; 128 * 1024];
     let mut rb = ReadBuf::new(&mut drained[..]);
 
     let noop_waker = futures::task::noop_waker();
     let mut cx = std::task::Context::from_waker(&noop_waker);
 
-    match Pin::new(stream).poll_read(&mut cx, &mut rb) {
-        std::task::Poll::Ready(_) => {
-            let filled_len = rb.filled().len();
-            drained.resize(filled_len, 0);
-            Some(drained)
+    let mut filled = rb.filled().len();
+    let mut stream = Pin::new(stream);
+
+    #[allow(clippy::while_let_loop)]
+    loop {
+        match stream.as_mut().poll_read(&mut cx, &mut rb) {
+            std::task::Poll::Ready(_) => {
+                let new_filled = rb.filled().len();
+
+                if new_filled == filled {
+                    // EOF, already?
+                    break;
+                } else {
+                    // keep going
+                    tracing::debug!(
+                        "drained {new_filled} bytes ({} read just now), continuing...",
+                        new_filled - filled
+                    );
+                    filled = new_filled;
+                }
+            }
+            _ => {
+                // this would block, so we're done
+                tracing::debug!(
+                    "would block, stopping after having drained {} bytes",
+                    filled
+                );
+                break;
+            }
         }
-        _ => None,
     }
+
+    let filled_len = rb.filled().len();
+    drained.resize(filled_len, 0);
+    Some(drained)
 }
 
 fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {

@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    os::fd::{AsRawFd, RawFd},
+    sync::Arc,
+    time::Duration,
+};
 
 use const_random::const_random;
 use rcgen::generate_simple_self_signed;
@@ -12,15 +16,15 @@ use rustls::{
     ClientConfig, RootCertStore, ServerConfig, SupportedCipherSuite, SupportedProtocolVersion,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::TlsConnector;
 use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
 
-const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
-const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
+const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
 
 #[tokio::test]
 async fn compatible_ciphers() {
@@ -122,15 +126,22 @@ async fn server_test(
             loop {
                 let (stream, addr) = ln.accept().await.unwrap();
                 debug!("Accepted TCP conn from {}", addr);
+                let stream = SpyStream(stream);
 
                 let stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
 
+                // sleep for a bit to let client write more data and stress test
+                // the draining logic
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
                 let mut stream = ktls::config_ktls_server(stream).unwrap();
                 debug!("Configured kTLS");
 
+                assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
+
                 debug!("Reading data");
-                let mut buf = [0u8; CLIENT_PAYLOAD.len()];
+                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
@@ -139,7 +150,7 @@ async fn server_test(
                 stream.flush().await.unwrap();
 
                 debug!("Reading data");
-                let mut buf = [0u8; CLIENT_PAYLOAD.len()];
+                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
@@ -178,7 +189,7 @@ async fn server_test(
     stream.flush().await.unwrap();
 
     debug!("Reading data");
-    let mut buf = [0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
@@ -188,7 +199,7 @@ async fn server_test(
     stream.flush().await.unwrap();
 
     debug!("Reading data");
-    let mut buf = [0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 }
@@ -261,12 +272,14 @@ async fn client_test(
         async move {
             loop {
                 let (stream, addr) = ln.accept().await.unwrap();
+                let stream = SpyStream(stream);
+
                 debug!("Accepted TCP conn from {}", addr);
                 let mut stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
 
                 debug!("Reading data");
-                let mut buf = [0u8; CLIENT_PAYLOAD.len()];
+                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
@@ -274,7 +287,7 @@ async fn client_test(
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
 
                 debug!("Reading data");
-                let mut buf = [0u8; CLIENT_PAYLOAD.len()];
+                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
@@ -320,7 +333,7 @@ async fn client_test(
     stream.flush().await.unwrap();
 
     debug!("Reading data");
-    let mut buf = [0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
@@ -330,7 +343,103 @@ async fn client_test(
     stream.flush().await.unwrap();
 
     debug!("Reading data");
-    let mut buf = [0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
+}
+
+struct SpyStream<IO>(IO);
+
+impl<IO> AsyncRead for SpyStream<IO>
+where
+    IO: AsyncRead,
+{
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let old_filled = buf.filled().len();
+        let res = unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_read(cx, buf)
+        };
+
+        match &res {
+            std::task::Poll::Ready(res) => match res {
+                Ok(_) => {
+                    let num_read = buf.filled().len() - old_filled;
+                    tracing::debug!("read {num_read} bytes",);
+                }
+                Err(e) => {
+                    tracing::debug!("read errored: {e}");
+                }
+            },
+            std::task::Poll::Pending => {
+                tracing::debug!("read would've blocked")
+            }
+        }
+        if let std::task::Poll::Ready(Ok(())) = res {}
+        res
+    }
+}
+
+impl<IO> AsyncWrite for SpyStream<IO>
+where
+    IO: AsyncWrite,
+{
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        let res = unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_write(cx, buf)
+        };
+
+        match &res {
+            std::task::Poll::Ready(res) => match res {
+                Ok(n) => {
+                    tracing::debug!("wrote {n} bytes");
+                }
+                Err(e) => {
+                    tracing::debug!("writing errored: {e}");
+                }
+            },
+            std::task::Poll::Pending => {
+                tracing::debug!("writing would've blocked")
+            }
+        }
+        res
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_flush(cx)
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_shutdown(cx)
+        }
+    }
+}
+
+impl<IO> AsRawFd for SpyStream<IO>
+where
+    IO: AsRawFd,
+{
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
 }

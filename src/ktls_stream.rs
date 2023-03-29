@@ -13,20 +13,6 @@ pin_project_lite::pin_project! {
         close_notified: bool,
         drained: Option<(usize, Vec<u8>)>,
     }
-
-    // FIXME: can't have `into_raw` AND implement drop, gotta pick one
-    // impl<IO> PinnedDrop for KtlsStream<IO>
-    // where
-    //     IO: AsRawFd
-    // {
-    //     fn drop(this: Pin<&mut Self>) {
-    //         if !this.close_notified {
-    //             // can't do much on error here. also no point in setting
-    //             // close_notified, because we're about to drop the stream anyway.
-    //             _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
-    //         }
-    //     }
-    // }
 }
 
 impl<IO> KtlsStream<IO>
@@ -54,6 +40,15 @@ where
     /// Returns a mut reference to the original I/O
     pub fn get_mut(&mut self) -> &mut IO {
         &mut self.inner
+    }
+
+    /// Returns the number of bytes that have been drained from rustls but not yet read.
+    /// Only really used in integration tests.
+    pub fn drained_remaining(&self) -> usize {
+        match self.drained.as_ref() {
+            Some((offset, v)) => v.len() - offset,
+            None => 0,
+        }
     }
 }
 
