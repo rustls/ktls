@@ -13,20 +13,6 @@ pin_project_lite::pin_project! {
         close_notified: bool,
         drained: Option<(usize, Vec<u8>)>,
     }
-
-    // FIXME: can't have `into_raw` AND implement drop, gotta pick one
-    // impl<IO> PinnedDrop for KtlsStream<IO>
-    // where
-    //     IO: AsRawFd
-    // {
-    //     fn drop(this: Pin<&mut Self>) {
-    //         if !this.close_notified {
-    //             // can't do much on error here. also no point in setting
-    //             // close_notified, because we're about to drop the stream anyway.
-    //             _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
-    //         }
-    //     }
-    // }
 }
 
 impl<IO> KtlsStream<IO>
@@ -55,6 +41,15 @@ where
     pub fn get_mut(&mut self) -> &mut IO {
         &mut self.inner
     }
+
+    /// Returns the number of bytes that have been drained from rustls but not yet read.
+    /// Only really used in integration tests.
+    pub fn drained_remaining(&self) -> usize {
+        match self.drained.as_ref() {
+            Some((offset, v)) => v.len() - offset,
+            None => 0,
+        }
+    }
 }
 
 impl<IO> AsyncRead for KtlsStream<IO>
@@ -66,14 +61,20 @@ where
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> task::Poll<io::Result<()>> {
+        tracing::trace!(remaining = %buf.remaining(), "KtlsStream::poll_read");
+
         let this = self.project();
 
         if let Some((drain_index, drained)) = this.drained.as_mut() {
             let drained = &drained[*drain_index..];
             let len = std::cmp::min(buf.remaining(), drained.len());
+
+            tracing::trace!(%len, "KtlsStream::poll_read, can take from drain");
             buf.put_slice(&drained[..len]);
+
             *drain_index += len;
             if *drain_index >= drained.len() {
+                tracing::trace!("KtlsStream::poll_read, done draining");
                 *this.drained = None;
             }
             cx.waker().wake_by_ref();
@@ -81,6 +82,7 @@ where
             return task::Poll::Ready(Ok(()));
         }
 
+        tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
         this.inner.poll_read(cx, buf)
     }
 }

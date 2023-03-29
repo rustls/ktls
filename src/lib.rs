@@ -5,10 +5,9 @@ use smallvec::SmallVec;
 use std::{
     io,
     os::unix::prelude::{AsRawFd, RawFd},
-    pin::Pin,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     net::{TcpListener, TcpStream},
 };
 
@@ -17,6 +16,9 @@ use crate::ffi::CryptoInfo;
 
 mod ktls_stream;
 pub use ktls_stream::KtlsStream;
+
+mod cork_stream;
+pub use cork_stream::CorkStream;
 
 #[derive(Debug, Default)]
 pub struct CompatibleCiphers {
@@ -183,6 +185,9 @@ pub enum Error {
     #[error("failed to configure tx/rx (unsupported cipher?): {0}")]
     TlsCryptoInfoError(#[source] std::io::Error),
 
+    #[error("an I/O occured while draining the rustls stream: {0}")]
+    DrainError(#[source] std::io::Error),
+
     #[error("no negotiated cipher suite: call config_ktls_* only /after/ the handshake")]
     NoNegotiatedCipherSuite,
 }
@@ -192,16 +197,19 @@ pub enum Error {
 /// transparently. I'm not clear how rekeying is handled (probably via control
 /// messages, but can't find a code sample for it).
 ///
-/// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
-/// to software encryption with rustls.
-pub fn config_ktls_server<IO>(
-    mut stream: tokio_rustls::server::TlsStream<IO>,
+/// The inner IO type must be wrapped in [CorkStream] since it's the only way
+/// to drain a rustls stream cleanly. See its documentation for details.
+pub async fn config_ktls_server<IO>(
+    mut stream: tokio_rustls::server::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
-    let drained = drain(&mut stream);
+    stream.get_mut().0.corked = true;
+    let drained = drain(&mut stream).await.map_err(Error::DrainError)?;
     let (io, conn) = stream.into_inner();
+    let io = io.io;
+
     setup_inner(io.as_raw_fd(), Connection::Server(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
@@ -210,37 +218,59 @@ where
 /// written and read from this socket, and the kernel takes care of encryption
 /// (and key updates, etc.) transparently.
 ///
-/// Most errors return the `TlsStream<IO>`, allowing the caller to fall back
-/// to software encryption with rustls.
-pub fn config_ktls_client<IO>(
-    mut stream: tokio_rustls::client::TlsStream<IO>,
+/// The inner IO type must be wrapped in [CorkStream] since it's the only way
+/// to drain a rustls stream cleanly. See its documentation for details.
+pub async fn config_ktls_client<IO>(
+    mut stream: tokio_rustls::client::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
     IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
-    let drained = drain(&mut stream);
+    stream.get_mut().0.corked = true;
+    let drained = drain(&mut stream).await.map_err(Error::DrainError)?;
     let (io, conn) = stream.into_inner();
+    let io = io.io;
+
     setup_inner(io.as_raw_fd(), Connection::Client(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
 /// Read all the bytes we can read without blocking. This is used to drained the
 /// already-decrypted buffer from a tokio-rustls I/O type
-fn drain(stream: &mut (dyn AsyncRead + Unpin)) -> Option<Vec<u8>> {
-    let mut drained = vec![0u8; 16384];
-    let mut rb = ReadBuf::new(&mut drained[..]);
+async fn drain(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<Vec<u8>>> {
+    tracing::trace!("Draining rustls stream");
+    let mut drained = vec![0u8; 128 * 1024];
+    let mut filled = 0;
 
-    let noop_waker = futures::task::noop_waker();
-    let mut cx = std::task::Context::from_waker(&noop_waker);
-
-    match Pin::new(stream).poll_read(&mut cx, &mut rb) {
-        std::task::Poll::Ready(_) => {
-            let filled_len = rb.filled().len();
-            drained.resize(filled_len, 0);
-            Some(drained)
+    loop {
+        tracing::trace!("stream.read called");
+        let n = match stream.read(&mut drained[filled..]).await {
+            Ok(n) => n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // actually this is expected for us!
+                break;
+            }
+            Err(e) => {
+                tracing::trace!("stream.read returned error: {e}");
+                return Err(e);
+            }
+        };
+        tracing::trace!("stream.read returned {n}");
+        if n == 0 {
+            // that's what CorkStream returns when it's at a message boundary
+            break;
         }
-        _ => None,
+        filled += n;
     }
+
+    let maybe_drained = if filled == 0 {
+        None
+    } else {
+        tracing::trace!("Draining rustls stream done: drained {filled} bytes");
+        drained.resize(filled, 0);
+        Some(drained)
+    };
+    Ok(maybe_drained)
 }
 
 fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
