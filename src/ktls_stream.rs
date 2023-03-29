@@ -61,14 +61,19 @@ where
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> task::Poll<io::Result<()>> {
+        tracing::trace!(remaining = %buf.remaining(), "KtlsStream::poll_read");
+
         let this = self.project();
 
         if let Some((drain_index, drained)) = this.drained.as_mut() {
             let drained = &drained[*drain_index..];
             let len = std::cmp::min(buf.remaining(), drained.len());
+            tracing::trace!(%len, "KtlsStream::poll_read, can take from drain");
             buf.put_slice(&drained[..len]);
+
             *drain_index += len;
             if *drain_index >= drained.len() {
+                tracing::trace!("KtlsStream::poll_read, done draining");
                 *this.drained = None;
             }
             cx.waker().wake_by_ref();
@@ -76,6 +81,7 @@ where
             return task::Poll::Ready(Ok(()));
         }
 
+        tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
         this.inner.poll_read(cx, buf)
     }
 }

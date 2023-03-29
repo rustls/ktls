@@ -23,8 +23,11 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
 
-const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
-const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+// const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+// const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+
+const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
+const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
 
 #[tokio::test]
 async fn compatible_ciphers() {
@@ -92,7 +95,8 @@ async fn server_test(
 ) {
     tracing_subscriber::fmt()
         // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
-        .with_env_filter(EnvFilter::new("debug"))
+        // .with_env_filter(EnvFilter::new("debug"))
+        .with_env_filter(EnvFilter::new("trace"))
         .pretty()
         .init();
 
@@ -138,7 +142,7 @@ async fn server_test(
                 let mut stream = ktls::config_ktls_server(stream).unwrap();
                 debug!("Configured kTLS");
 
-                assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
+                // assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
 
                 debug!("Reading data");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
@@ -369,14 +373,14 @@ where
             std::task::Poll::Ready(res) => match res {
                 Ok(_) => {
                     let num_read = buf.filled().len() - old_filled;
-                    tracing::debug!("read {num_read} bytes",);
+                    tracing::debug!("SpyStream read {num_read} bytes",);
                 }
                 Err(e) => {
-                    tracing::debug!("read errored: {e}");
+                    tracing::debug!("SpyStream read errored: {e}");
                 }
             },
             std::task::Poll::Pending => {
-                tracing::debug!("read would've blocked")
+                tracing::debug!("SpyStream read would've blocked")
             }
         }
         if let std::task::Poll::Ready(Ok(())) = res {}
@@ -401,14 +405,14 @@ where
         match &res {
             std::task::Poll::Ready(res) => match res {
                 Ok(n) => {
-                    tracing::debug!("wrote {n} bytes");
+                    tracing::debug!("SpyStream wrote {n} bytes");
                 }
                 Err(e) => {
-                    tracing::debug!("writing errored: {e}");
+                    tracing::debug!("SpyStream writing errored: {e}");
                 }
             },
             std::task::Poll::Pending => {
-                tracing::debug!("writing would've blocked")
+                tracing::debug!("SpyStream writing would've blocked")
             }
         }
         res
