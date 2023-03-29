@@ -10,6 +10,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 enum State {
     ReadHeader { header_buf: [u8; 5], offset: usize },
     ReadPayload { msg_size: usize, offset: usize },
+    // we encountered EOF while reading, or saw an invalid header and we're just
+    // passing reads through without doing any sort of processing now.
+    Passthrough,
 }
 
 pub struct CorkStream<IO> {
@@ -72,21 +75,29 @@ where
                     }
 
                     if *offset == 5 {
-                        // TODO: error handling
-                        let typ =
-                            rustls::ContentType::read_bytes(&header_buf[0..1]).expect("valid typ");
-                        let version = rustls::ProtocolVersion::read_bytes(&header_buf[1..3])
-                            .expect("valid version");
-                        let len: u16 = u16::from_be_bytes(header_buf[3..5].try_into().unwrap());
-                        tracing::trace!("read header: typ={typ:?}, version={version:?}, len={len}");
-
-                        // TODO: handle cases where buffer is smalelr than 5,
-                        // as-is, this'll panic
+                        // TODO: handle cases where buffer has less than 5 bytes
+                        // remaining. I (fasterthanlime) bet this never happens in
+                        // practice since the rustls deframer uses `copy_within` to
+                        // get rid of the part of the buffer it's already decoded.
+                        assert!(buf.remaining() >= 5, "you found an edge case in ktls!");
                         buf.put_slice(&header_buf[..]);
-                        *state = State::ReadPayload {
-                            msg_size: len as usize,
-                            offset: 0,
-                        };
+
+                        match decode_header(*header_buf) {
+                            Some((typ, version, len)) => {
+                                tracing::trace!(
+                                    "read header: typ={typ:?}, version={version:?}, len={len}"
+                                );
+                                *state = State::ReadPayload {
+                                    msg_size: len as usize,
+                                    offset: 0,
+                                };
+                            }
+                            None => {
+                                // we encountered an invalid header, let's bail out
+                                *state = State::Passthrough;
+                            }
+                        }
+
                         return Poll::Ready(Ok(()));
                     } else {
                         // keep trying
@@ -118,6 +129,11 @@ where
 
                     return Poll::Ready(Ok(()));
                 }
+                State::Passthrough => {
+                    // we encountered EOF while reading, or saw an invalid header and we're just
+                    // passing reads through without doing any sort of processing now.
+                    return io.poll_read(cx, buf);
+                }
             }
         }
     }
@@ -148,4 +164,12 @@ where
         let io = unsafe { self.map_unchecked_mut(|s| &mut s.io) };
         io.poll_shutdown(cx)
     }
+}
+
+fn decode_header(b: [u8; 5]) -> Option<(rustls::ContentType, rustls::ProtocolVersion, u16)> {
+    let typ = rustls::ContentType::read_bytes(&b[0..1])?;
+    let version = rustls::ProtocolVersion::read_bytes(&b[1..3])?;
+    // this is dumb but it looks less scary than `.try_into().unwrap()`:
+    let len: u16 = u16::from_be_bytes([b[3], b[4]]);
+    Some((typ, version, len))
 }
