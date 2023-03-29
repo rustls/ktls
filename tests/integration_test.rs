@@ -23,8 +23,8 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
 
-// const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
-// const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
 
 // const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
 // const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 32768]);
@@ -35,8 +35,8 @@ use tracing_subscriber::EnvFilter;
 // const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 512]);
 // const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 512]);
 
-const CLIENT_PAYLOAD: &[u8] = b"I am the client";
-const SERVER_PAYLOAD: &[u8] = b"I am the server";
+// const CLIENT_PAYLOAD: &[u8] = b"I am the client";
+// const SERVER_PAYLOAD: &[u8] = b"I am the server";
 
 #[tokio::test]
 async fn compatible_ciphers() {
