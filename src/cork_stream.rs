@@ -42,10 +42,6 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        // if self.corked {
-        //     return Poll::Ready(Ok(()));
-        // }
-
         let this = unsafe { self.get_unchecked_mut() };
         let mut io = unsafe { Pin::new_unchecked(&mut this.io) };
 

@@ -29,7 +29,3 @@ rcgen = "0.10.0"
 socket2 = "0.4.7"
 tokio = { version = "1.21.2", features = ["full"] }
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
-
-[patch.crates-io]
-# use rustls from ../rustls
-rustls = { path = "../rustls/rustls" }
