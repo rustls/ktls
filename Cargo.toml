@@ -1,6 +1,6 @@
 [package]
 name = "ktls"
-version = "2.0.0"
+version = "3.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hapsoc/ktls"
@@ -11,21 +11,21 @@ Configures kTLS for tokio-rustls client and server connections.
 """
 
 [dependencies]
-libc = "0.2.133"
-thiserror = "1.0.37"
-tracing = "0.1.36"
-tokio-rustls = "0.23.4"
-rustls = { version = "0.20.7", features = ["secret_extraction"] }
+libc = "0.2.146"
+thiserror = "1.0.40"
+tracing = "0.1.37"
+tokio-rustls = "0.24.1"
+rustls = { version = "0.21.1", features = ["secret_extraction"] }
 smallvec = "1.10.0"
-memoffset = "0.6.5"
+memoffset = "0.9.0"
 pin-project-lite = "0.2.9"
-tokio = { version = "1.21.2", features = ["net", "macros", "io-util"] }
-futures = "0.3.24"
+tokio = { version = "1.28.2", features = ["net", "macros", "io-util"] }
+futures = "0.3.28"
 ktls-sys = "1.0.0"
 
 [dev-dependencies]
 const-random = "0.1.15"
 rcgen = "0.10.0"
-socket2 = "0.4.7"
-tokio = { version = "1.21.2", features = ["full"] }
-tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+socket2 = "0.5.3"
+tokio = { version = "1.28.2", features = ["full"] }
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }

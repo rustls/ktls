@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.0 (2023-06-14)
+
+Upgrade to tokio-rustls 0.24.1
+
 ## 2.0.0 (2023-03-29)
 
 Comes with a bunch of breaking changes, necessary to address some issues.

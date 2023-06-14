@@ -193,8 +193,8 @@ where
 }
 
 fn decode_header(b: [u8; 5]) -> Option<(rustls::ContentType, rustls::ProtocolVersion, u16)> {
-    let typ = rustls::ContentType::read_bytes(&b[0..1])?;
-    let version = rustls::ProtocolVersion::read_bytes(&b[1..3])?;
+    let typ = rustls::ContentType::read_bytes(&b[0..1]).ok()?;
+    let version = rustls::ProtocolVersion::read_bytes(&b[1..3]).ok()?;
     // this is dumb but it looks less scary than `.try_into().unwrap()`:
     let len: u16 = u16::from_be_bytes([b[3], b[4]]);
     Some((typ, version, len))
