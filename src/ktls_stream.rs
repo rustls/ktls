@@ -1,19 +1,17 @@
 use std::{
     io::{self, IoSliceMut},
-    mem::ManuallyDrop,
-    os::{
-        fd::{FromRawFd, RawFd},
-        unix::prelude::AsRawFd,
-    },
+    os::unix::prelude::AsRawFd,
     pin::Pin,
     task,
 };
 
 use nix::{
     cmsg_space,
-    sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn},
+    sys::socket::{MsgFlags, SockaddrIn},
 };
-use tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::AsyncReadReady;
 
 // A wrapper around `IO` that sends a `close_notify` when shut down or dropped.
 pin_project_lite::pin_project! {
@@ -67,7 +65,7 @@ where
 
 impl<IO> AsyncRead for KtlsStream<IO>
 where
-    IO: AsRawFd + AsyncRead,
+    IO: AsRawFd + AsyncRead + AsyncReadReady,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -98,16 +96,13 @@ where
         tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
         {
             let fd = this.inner.as_raw_fd();
-            let std_tcp_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-            let tcp_stream = tokio::net::TcpStream::from_std(std_tcp_stream)
-                .map(ManuallyDrop::new)
-                .unwrap();
 
-            let res = futures::ready!(tcp_stream.poll_read_ready(cx));
+            let res = futures::ready!(this.inner.poll_read_ready(cx));
             if let Err(e) = res {
                 tracing::trace!(?e, "KtlsStream::poll_read, poll_read_ready");
                 return Err(e).into();
             }
+            tracing::trace!("KtlsStream::poll_read, ready to read");
 
             let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
             let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
@@ -118,12 +113,7 @@ where
             tracing::trace!("recvmsg result = {:#?}", r);
         }
 
-        let res = this.inner.poll_read(cx, buf);
-
-        if let task::Poll::Ready(res) = &res {
-            tracing::trace!(?res, "KtlsStream::poll_read, inner IO result");
-        }
-        res
+        todo!("the rest of the KTLS read path")
     }
 }
 

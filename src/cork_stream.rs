@@ -1,11 +1,9 @@
-use std::{
-    io,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::{io, pin::Pin, task};
 
 use rustls::internal::msgs::codec::Codec;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::AsyncReadReady;
 
 enum State {
     ReadHeader { header_buf: [u8; 5], offset: usize },
@@ -59,9 +57,9 @@ where
     #[inline]
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    ) -> task::Poll<io::Result<()>> {
         let this = unsafe { self.get_unchecked_mut() };
         let mut io = unsafe { Pin::new_unchecked(&mut this.io) };
 
@@ -75,7 +73,7 @@ where
                             "corked, returning empty read (but waking to prevent stalls)"
                         );
                         cx.waker().wake_by_ref();
-                        return Poll::Ready(Ok(()));
+                        return task::Poll::Ready(Ok(()));
                     }
 
                     let left = header_buf.len() - *offset;
@@ -97,7 +95,7 @@ where
                             buf.put_slice(&header_buf[..*offset]);
                             *state = State::Passthrough;
 
-                            return Poll::Ready(Ok(()));
+                            return task::Poll::Ready(Ok(()));
                         }
                         tracing::trace!("read {} bytes off of header", rest.filled().len());
                     }
@@ -127,7 +125,7 @@ where
                             }
                         }
 
-                        return Poll::Ready(Ok(()));
+                        return task::Poll::Ready(Ok(()));
                     } else {
                         // keep trying
                     }
@@ -156,7 +154,7 @@ where
                     let new_filled = buf.filled().len() + just_read;
                     buf.set_filled(new_filled);
 
-                    return Poll::Ready(Ok(()));
+                    return task::Poll::Ready(Ok(()));
                 }
                 State::Passthrough => {
                     // we encountered EOF while reading, or saw an invalid header and we're just
@@ -168,6 +166,15 @@ where
     }
 }
 
+impl<IO> AsyncReadReady for CorkStream<IO>
+where
+    IO: AsyncReadReady,
+{
+    fn poll_read_ready(&self, cx: &mut task::Context<'_>) -> task::Poll<io::Result<()>> {
+        self.io.poll_read_ready(cx)
+    }
+}
+
 impl<IO> AsyncWrite for CorkStream<IO>
 where
     IO: AsyncWrite,
@@ -175,21 +182,24 @@ where
     #[inline]
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        cx: &mut task::Context<'_>,
         buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    ) -> task::Poll<io::Result<usize>> {
         let io = unsafe { self.map_unchecked_mut(|s| &mut s.io) };
         io.poll_write(cx, buf)
     }
 
     #[inline]
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<io::Result<()>> {
         let io = unsafe { self.map_unchecked_mut(|s| &mut s.io) };
         io.poll_flush(cx)
     }
 
     #[inline]
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<io::Result<()>> {
         let io = unsafe { self.map_unchecked_mut(|s| &mut s.io) };
         io.poll_shutdown(cx)
     }

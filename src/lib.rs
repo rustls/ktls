@@ -14,6 +14,9 @@ use tokio::{
 mod ffi;
 use crate::ffi::CryptoInfo;
 
+mod async_read_ready;
+pub use async_read_ready::AsyncReadReady;
+
 mod ktls_stream;
 pub use ktls_stream::KtlsStream;
 
@@ -203,7 +206,7 @@ pub async fn config_ktls_server<IO>(
     mut stream: tokio_rustls::server::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
-    IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
+    IO: AsRawFd + AsyncRead + AsyncReadReady + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
     let drained = drain(&mut stream).await.map_err(Error::DrainError)?;

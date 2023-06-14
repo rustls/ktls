@@ -1,11 +1,13 @@
 use std::{
+    io,
     os::fd::{AsRawFd, RawFd},
     sync::Arc,
+    task,
     time::Duration,
 };
 
 use const_random::const_random;
-use ktls::CorkStream;
+use ktls::{AsyncReadReady, CorkStream};
 use rcgen::generate_simple_self_signed;
 use rustls::{
     cipher_suite::{
@@ -365,9 +367,9 @@ where
 {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> task::Poll<std::io::Result<()>> {
         let old_filled = buf.filled().len();
         let res = unsafe {
             let io = self.map_unchecked_mut(|s| &mut s.0);
@@ -375,7 +377,7 @@ where
         };
 
         match &res {
-            std::task::Poll::Ready(res) => match res {
+            task::Poll::Ready(res) => match res {
                 Ok(_) => {
                     let num_read = buf.filled().len() - old_filled;
                     tracing::debug!("SpyStream read {num_read} bytes",);
@@ -384,11 +386,20 @@ where
                     tracing::debug!("SpyStream read errored: {e}");
                 }
             },
-            std::task::Poll::Pending => {
+            task::Poll::Pending => {
                 tracing::debug!("SpyStream read would've blocked")
             }
         }
         res
+    }
+}
+
+impl<IO> AsyncReadReady for SpyStream<IO>
+where
+    IO: AsyncReadReady,
+{
+    fn poll_read_ready(&self, cx: &mut task::Context<'_>) -> task::Poll<io::Result<()>> {
+        self.0.poll_read_ready(cx)
     }
 }
 
@@ -398,16 +409,16 @@ where
 {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut task::Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+    ) -> task::Poll<Result<usize, std::io::Error>> {
         let res = unsafe {
             let io = self.map_unchecked_mut(|s| &mut s.0);
             io.poll_write(cx, buf)
         };
 
         match &res {
-            std::task::Poll::Ready(res) => match res {
+            task::Poll::Ready(res) => match res {
                 Ok(n) => {
                     tracing::debug!("SpyStream wrote {n} bytes");
                 }
@@ -415,7 +426,7 @@ where
                     tracing::debug!("SpyStream writing errored: {e}");
                 }
             },
-            std::task::Poll::Pending => {
+            task::Poll::Pending => {
                 tracing::debug!("SpyStream writing would've blocked")
             }
         }
@@ -424,8 +435,8 @@ where
 
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<Result<(), std::io::Error>> {
         unsafe {
             let io = self.map_unchecked_mut(|s| &mut s.0);
             io.poll_flush(cx)
@@ -434,8 +445,8 @@ where
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<Result<(), std::io::Error>> {
         unsafe {
             let io = self.map_unchecked_mut(|s| &mut s.0);
             io.poll_shutdown(cx)
