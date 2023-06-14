@@ -94,26 +94,33 @@ where
         }
 
         tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
-        {
-            let fd = this.inner.as_raw_fd();
+        let fd = this.inner.as_raw_fd();
 
-            let res = futures::ready!(this.inner.poll_read_ready(cx));
-            if let Err(e) = res {
-                tracing::trace!(?e, "KtlsStream::poll_read, poll_read_ready");
-                return Err(e).into();
-            }
-            tracing::trace!("KtlsStream::poll_read, ready to read");
-
-            let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
-            let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
-            let flags = MsgFlags::empty();
-
-            let r =
-                nix::sys::socket::recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
-            tracing::trace!("recvmsg result = {:#?}", r);
+        let res = futures::ready!(this.inner.poll_read_ready(cx));
+        if let Err(e) = res {
+            tracing::trace!(?e, "KtlsStream::poll_read, poll_read_ready");
+            return Err(e).into();
         }
+        tracing::trace!("KtlsStream::poll_read, ready to read");
 
-        todo!("the rest of the KTLS read path")
+        let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
+        let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
+        let flags = MsgFlags::empty();
+
+        let r = nix::sys::socket::recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::trace!(?e, "recvmsg failed");
+                return Err(e.into()).into();
+            }
+        };
+        tracing::trace!("recvmsg result = {:#?}", r);
+        let read_bytes = r.bytes;
+
+        // FIXME: is that correct?
+        buf.advance(read_bytes);
+        task::Poll::Ready(Ok(()))
     }
 }
 

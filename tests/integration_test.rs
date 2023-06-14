@@ -270,6 +270,7 @@ async fn client_test(
         .unwrap();
 
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
+    server_config.send_tls13_tickets = 0;
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
     let ln = TcpListener::bind("[::]:0").await.unwrap();
