@@ -1,6 +1,19 @@
-use std::{io, os::unix::prelude::AsRawFd, pin::Pin, task};
+use std::{
+    io::{self, IoSliceMut},
+    mem::ManuallyDrop,
+    os::{
+        fd::{FromRawFd, RawFd},
+        unix::prelude::AsRawFd,
+    },
+    pin::Pin,
+    task,
+};
 
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use nix::{
+    cmsg_space,
+    sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn},
+};
+use tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf};
 
 // A wrapper around `IO` that sends a `close_notify` when shut down or dropped.
 pin_project_lite::pin_project! {
@@ -83,7 +96,34 @@ where
         }
 
         tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
-        this.inner.poll_read(cx, buf)
+        {
+            let fd = this.inner.as_raw_fd();
+            let std_tcp_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+            let tcp_stream = tokio::net::TcpStream::from_std(std_tcp_stream)
+                .map(ManuallyDrop::new)
+                .unwrap();
+
+            let res = futures::ready!(tcp_stream.poll_read_ready(cx));
+            if let Err(e) = res {
+                tracing::trace!(?e, "KtlsStream::poll_read, poll_read_ready");
+                return Err(e).into();
+            }
+
+            let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
+            let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
+            let flags = MsgFlags::empty();
+
+            let r =
+                nix::sys::socket::recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
+            tracing::trace!("recvmsg result = {:#?}", r);
+        }
+
+        let res = this.inner.poll_read(cx, buf);
+
+        if let task::Poll::Ready(res) = &res {
+            tracing::trace!(?res, "KtlsStream::poll_read, inner IO result");
+        }
+        res
     }
 }
 
