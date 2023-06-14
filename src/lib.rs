@@ -248,6 +248,7 @@ async fn drain(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<
             Ok(n) => n,
             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 // actually this is expected for us!
+                tracing::trace!("stream.read returned UnexpectedEof, that's expected for us");
                 break;
             }
             Err(e) => {

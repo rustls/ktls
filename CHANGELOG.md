@@ -1,6 +1,11 @@
 # Changelog
 
-## 3.0.0 (2023-06-14)
+## 3.0.1 (unreleased)
+
+Fix test suite (follow rustls' `ClientConfig::enable_tickets` transition to
+`ClientConfig::resumption`).
+
+## 3.0.0 (2023-06-14) (yanked)
 
 Upgrade to tokio-rustls 0.24.1
 

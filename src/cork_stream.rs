@@ -83,7 +83,9 @@ where
 
                     {
                         let mut rest = ReadBuf::new(&mut header_buf[*offset..]);
+                        tracing::trace!("reading header: doing i/o");
                         futures::ready!(io.as_mut().poll_read(cx, &mut rest)?);
+                        tracing::trace!("reading header: io was ready");
                         *offset += rest.filled().len();
                         if rest.filled().is_empty() {
                             // that's an unexpected EOF for sure, but let's have
@@ -120,6 +122,7 @@ where
                             }
                             None => {
                                 // we encountered an invalid header, let's bail out
+                                tracing::warn!("encountered invalid header, bailing out");
                                 *state = State::Passthrough;
                             }
                         }
