@@ -189,22 +189,22 @@ async fn server_test(
         .await
         .unwrap();
 
-    debug!("Client writing data");
+    debug!("Client writing data (1/4)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Client reading data");
+    debug!("Client reading data (2/4)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Client writing data (again)");
+    debug!("Client writing data (3/4)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Client reading data (again)");
+    debug!("Client reading data (4/4)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
@@ -285,20 +285,25 @@ async fn client_test(
                 let mut stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
 
-                debug!("Server reading data");
+                debug!("Server reading data (1/4)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data");
+                debug!("Server writing data (2/4)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
 
-                debug!("Server reading data");
+                debug!("Server reading data (3/4)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data");
+                for _i in 0..3 {
+                    debug!("Making the client wait (to make busywaits REALLY obvious)");
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+
+                debug!("Server writing data (4/4)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.shutdown().await.unwrap();
 
