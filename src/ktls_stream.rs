@@ -74,7 +74,7 @@ where
     ) -> task::Poll<io::Result<()>> {
         tracing::trace!(buf.remaining = %buf.remaining(), "KtlsStream::poll_read");
 
-        let this = self.project();
+        let mut this = self.project();
 
         if let Some((drain_index, drained)) = this.drained.as_mut() {
             let drained = &drained[*drain_index..];
@@ -94,53 +94,91 @@ where
             return task::Poll::Ready(Ok(()));
         }
 
-        let fd = this.inner.as_raw_fd();
+        let read_res = this.inner.as_mut().poll_read(cx, buf);
+        if let task::Poll::Ready(Err(e)) = &read_res {
+            // 5 is a generic "input/output error", it happens when
+            // using poll_read on a kTLS socket that just received
+            // a control message
+            if let Some(5) = e.raw_os_error() {
+                // could be a control message, let's check
+                let fd = this.inner.as_raw_fd();
 
-        let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
-        let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
-        let flags = MsgFlags::empty();
+                let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
+                let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
+                let flags = MsgFlags::empty();
 
-        let r = nix::sys::socket::recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
-        let r = match r {
-            Ok(r) => r,
-            Err(nix::errno::Errno::EAGAIN) => {
-                // this time don't `wake_by_ref` on purpose, but clear readiness by calling
-                // poll_read, knowing it'll fail
-                tracing::trace!("KtlsStream::poll_read, recvmsg gave us EAGAIN/EWOULDBLOCK");
-                match this.inner.poll_read(cx, buf) {
-                    task::Poll::Ready(_) => {
-                        unreachable!("one of ktls's core assumptions about async I/O didn't hold")
+                let r = nix::sys::socket::recvmsg::<SockaddrIn>(
+                    fd,
+                    &mut iov,
+                    Some(&mut cmsgspace),
+                    flags,
+                );
+                let r = match r {
+                    Ok(r) => r,
+                    Err(nix::errno::Errno::EAGAIN) => {
+                        unreachable!("expected a control message, got EAGAIN")
                     }
-                    task::Poll::Pending => return task::Poll::Pending,
-                }
-            }
-            Err(e) => {
-                tracing::trace!(?e, "recvmsg failed");
-                return Err(e.into()).into();
-            }
-        };
-        let cmsg = r.cmsgs().next().unwrap();
-        tracing::trace!("cmsg = {cmsg:#?}");
-        let message_type = match cmsg {
-            ControlMessageOwned::TlsGetRecordType(t) => t,
-            _ => panic!("unexpected cmsg type: {cmsg:#?}"),
-        };
-        match message_type {
-            23 => {
-                tracing::trace!(%r.bytes, "KtlsStream::poll_read, returning Ok");
-                let read_bytes = r.bytes;
-                buf.advance(read_bytes);
-                task::Poll::Ready(Ok(()))
-            }
-            _ => {
-                tracing::trace!("received message_type {message_type:#?}");
+                    Err(e) => {
+                        // ok I guess it really failed then
+                        tracing::trace!(?e, "recvmsg failed");
+                        return Err(e.into()).into();
+                    }
+                };
+                let cmsg = r
+                    .cmsgs()
+                    .next()
+                    .expect("we should've received exactly one control message");
+                match cmsg {
+                    // cf. RFC 5246, Section 6.2.1
+                    // https://datatracker.ietf.org/doc/html/rfc5246#section-6.2.1
+                    ControlMessageOwned::TlsGetRecordType(t) => {
+                        match t {
+                            // change_cipher_spec
+                            20 => {
+                                panic!(
+                                    "received TLS change_cipher_spec, this isn't supported by ktls"
+                                )
+                            }
+                            // alert
+                            21 => {
+                                panic!("received TLS alert, this isn't supported by ktls")
+                            }
+                            // handshake
+                            22 => {
+                                // TODO: this is where we receive TLS 1.3 resumption tickets,
+                                // should those be stored anywhere? I'm not even sure what
+                                // format they have at this point
+                                tracing::trace!(
+                                    "ignoring handshake message (probably a resumption ticket)"
+                                );
+                            }
+                            // application data
+                            23 => {
+                                unreachable!("received TLS application in recvmsg, this is supposed to happen in the poll_read codepath")
+                            }
+                            _ => {
+                                // just ignore the message type then
+                                tracing::trace!("received message_type {t:#?}");
+                            }
+                        }
+                    }
+                    _ => panic!("unexpected cmsg type: {cmsg:#?}"),
+                };
 
-                // FIXME: hacky, maybe there's a way to avoid a loop here if
-                // the socket isn't actually ready to be read
+                // FIXME: this is hacky, but can we do better?
+                // after we handled (..ignored) the control message, we don't
+                // know whether the scoket is still ready to be read or not.
+                //
+                // we could try looping (tricky code structure), but we can't,
+                // for example, just call `poll_read`, which might fail not
+                // not with EAGAIN/EWOULDBLOCK, but because _another_ control
+                // message is available.
                 cx.waker().wake_by_ref();
-                task::Poll::Pending
+                return task::Poll::Pending;
             }
         }
+
+        read_res
     }
 }
 
