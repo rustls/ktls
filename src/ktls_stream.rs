@@ -104,18 +104,15 @@ where
         let r = match r {
             Ok(r) => r,
             Err(nix::errno::Errno::EAGAIN) => {
-                // this time don't `wake_by_ref` on purpose, but try to to clear readiness
-                tracing::trace!("KtlsStream::poll_read, got EAGAIN");
-                match this.inner.poll_read_ready(cx) {
-                    task::Poll::Ready(s) => {
-                        tracing::trace!("KtlsStream::poll_read, got Ready, {s:#?}")
+                // this time don't `wake_by_ref` on purpose, but clear readiness by calling
+                // poll_read, knowing it'll fail
+                tracing::trace!("KtlsStream::poll_read, recvmsg gave us EAGAIN/EWOULDBLOCK");
+                match this.inner.poll_read(cx, buf) {
+                    task::Poll::Ready(_) => {
+                        unreachable!("one of ktls's core assumptions about async I/O didn't hold")
                     }
-                    task::Poll::Pending => {
-                        tracing::trace!("KtlsStream::poll_read, got Pending")
-                    }
+                    task::Poll::Pending => return task::Poll::Pending,
                 }
-                cx.waker().wake_by_ref();
-                return task::Poll::Pending;
             }
             Err(e) => {
                 tracing::trace!(?e, "recvmsg failed");
