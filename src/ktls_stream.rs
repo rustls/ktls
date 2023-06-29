@@ -72,7 +72,7 @@ where
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> task::Poll<io::Result<()>> {
-        tracing::trace!(remaining = %buf.remaining(), "KtlsStream::poll_read");
+        tracing::trace!(buf.remaining = %buf.remaining(), "KtlsStream::poll_read");
 
         let this = self.project();
 
@@ -90,18 +90,11 @@ where
             }
             cx.waker().wake_by_ref();
 
+            tracing::trace!("KtlsStream::poll_read, returning after drain");
             return task::Poll::Ready(Ok(()));
         }
 
-        tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
         let fd = this.inner.as_raw_fd();
-
-        let res = futures::ready!(this.inner.poll_read_ready(cx));
-        if let Err(e) = res {
-            tracing::trace!(?e, "KtlsStream::poll_read, poll_read_ready");
-            return Err(e).into();
-        }
-        tracing::trace!("KtlsStream::poll_read, ready to read");
 
         let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
         let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
@@ -112,8 +105,17 @@ where
             Ok(r) => r,
             Err(nix::errno::Errno::EAGAIN) => {
                 // this time don't `wake_by_ref` on purpose, but try to to clear readiness
-                return this.inner.poll_read_ready(cx);
-                // return task::Poll::Pending;
+                tracing::trace!("KtlsStream::poll_read, got EAGAIN");
+                match this.inner.poll_read_ready(cx) {
+                    task::Poll::Ready(s) => {
+                        tracing::trace!("KtlsStream::poll_read, got Ready, {s:#?}")
+                    }
+                    task::Poll::Pending => {
+                        tracing::trace!("KtlsStream::poll_read, got Pending")
+                    }
+                }
+                cx.waker().wake_by_ref();
+                return task::Poll::Pending;
             }
             Err(e) => {
                 tracing::trace!(?e, "recvmsg failed");
@@ -128,6 +130,7 @@ where
         };
         match message_type {
             23 => {
+                tracing::trace!(%r.bytes, "KtlsStream::poll_read, returning Ok");
                 let read_bytes = r.bytes;
                 buf.advance(read_bytes);
                 task::Poll::Ready(Ok(()))
