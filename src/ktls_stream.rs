@@ -115,20 +115,27 @@ where
                 return Err(e.into()).into();
             }
         };
-        tracing::trace!("recvmsg result = {:#?}", r);
         let cmsg = r.cmsgs().next().unwrap();
-        let unknown_cmsg = match cmsg {
-            ControlMessageOwned::Unknown(unk) => unk,
+        tracing::trace!("cmsg = {cmsg:#?}");
+        let message_type = match cmsg {
+            ControlMessageOwned::TlsGetRecordType(t) => t,
             _ => panic!("unexpected cmsg type: {cmsg:#?}"),
         };
-        tracing::trace!("received {unknown_cmsg:#?}");
-        let msg_type = unknown_cmsg.1[0];
+        match message_type {
+            23 => {
+                let read_bytes = r.bytes;
+                buf.advance(read_bytes);
+                task::Poll::Ready(Ok(()))
+            }
+            _ => {
+                tracing::trace!("received message_type {message_type:#?}");
 
-        let read_bytes = r.bytes;
-
-        // FIXME: is that correct?
-        buf.advance(read_bytes);
-        task::Poll::Ready(Ok(()))
+                // FIXME: hacky, maybe there's a way to avoid a loop here if
+                // the socket isn't actually ready to be read
+                cx.waker().wake_by_ref();
+                task::Poll::Pending
+            }
+        }
     }
 }
 
