@@ -7,7 +7,7 @@ use std::{
 
 use nix::{
     cmsg_space,
-    sys::socket::{MsgFlags, SockaddrIn},
+    sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -116,6 +116,14 @@ where
             }
         };
         tracing::trace!("recvmsg result = {:#?}", r);
+        let cmsg = r.cmsgs().next().unwrap();
+        let unknown_cmsg = match cmsg {
+            ControlMessageOwned::Unknown(unk) => unk,
+            _ => panic!("unexpected cmsg type: {cmsg:#?}"),
+        };
+        tracing::trace!("received {unknown_cmsg:#?}");
+        let msg_type = unknown_cmsg.1[0];
+
         let read_bytes = r.bytes;
 
         // FIXME: is that correct?
