@@ -110,6 +110,11 @@ where
         let r = nix::sys::socket::recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
         let r = match r {
             Ok(r) => r,
+            Err(nix::errno::Errno::EAGAIN) => {
+                // this time don't `wake_by_ref` on purpose, but try to to clear readiness
+                return this.inner.poll_read_ready(cx);
+                // return task::Poll::Pending;
+            }
             Err(e) => {
                 tracing::trace!(?e, "recvmsg failed");
                 return Err(e.into()).into();
