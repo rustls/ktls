@@ -131,7 +131,7 @@ async fn server_test(
             loop {
                 let (stream, addr) = ln.accept().await.unwrap();
                 debug!("Accepted TCP conn from {}", addr);
-                let stream = SpyStream(stream);
+                let stream = SpyStream(stream, "server");
                 let stream = CorkStream::new(stream);
 
                 let stream = acceptor.accept(stream).await.unwrap();
@@ -146,21 +146,21 @@ async fn server_test(
 
                 // assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
 
-                debug!("Server reading data");
+                debug!("Server reading data (1/4)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data");
+                debug!("Server writing data (2/4)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.flush().await.unwrap();
 
-                debug!("Server reading data (again)");
+                debug!("Server reading data (3/4)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (again)");
+                debug!("Server writing data (4/4)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.flush().await.unwrap();
             }
@@ -335,32 +335,32 @@ async fn client_test(
         .unwrap();
 
     let stream = ktls::config_ktls_client(stream).await.unwrap();
-    let mut stream = SpyStream(stream);
+    let mut stream = SpyStream(stream, "client");
 
-    debug!("Client writing data");
+    debug!("Client writing data (1/4)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    debug!("Client reading data");
+    debug!("Client reading data (2/4)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Client writing data");
+    debug!("Client writing data (3/4)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Client reading data");
+    debug!("Client reading data (4/4)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 }
 
-struct SpyStream<IO>(IO);
+struct SpyStream<IO>(IO, &'static str);
 
 impl<IO> AsyncRead for SpyStream<IO>
 where
@@ -372,6 +372,7 @@ where
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> task::Poll<std::io::Result<()>> {
         let old_filled = buf.filled().len();
+        let name = self.1;
         let res = unsafe {
             let io = self.map_unchecked_mut(|s| &mut s.0);
             io.poll_read(cx, buf)
@@ -381,14 +382,14 @@ where
             task::Poll::Ready(res) => match res {
                 Ok(_) => {
                     let num_read = buf.filled().len() - old_filled;
-                    tracing::debug!("SpyStream read {num_read} bytes",);
+                    tracing::debug!(%name, "SpyStream read {num_read} bytes",);
                 }
                 Err(e) => {
-                    tracing::debug!("SpyStream read errored: {e}");
+                    tracing::debug!(%name, "SpyStream read errored: {e}");
                 }
             },
             task::Poll::Pending => {
-                tracing::debug!("SpyStream read would've blocked")
+                tracing::debug!(%name, "SpyStream read would've blocked")
             }
         }
         res
