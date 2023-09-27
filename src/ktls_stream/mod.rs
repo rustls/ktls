@@ -1,3 +1,4 @@
+use ktls_recvmsg::{ControlMessageOwned, MsgFlags, SockaddrIn};
 use std::{
     io::{self, IoSliceMut},
     os::unix::prelude::AsRawFd,
@@ -5,10 +6,6 @@ use std::{
     task,
 };
 
-use nix::{
-    cmsg_space,
-    sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn},
-};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::AsyncReadReady;
@@ -103,7 +100,8 @@ where
                 // could be a control message, let's check
                 let fd = this.inner.as_raw_fd();
 
-                let mut cmsgspace = cmsg_space!(nix::sys::time::TimeVal);
+                let mut cmsgspace =
+                    [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<u8>() as _) as _ }];
                 let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
                 let flags = MsgFlags::empty();
 
