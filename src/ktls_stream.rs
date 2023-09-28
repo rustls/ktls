@@ -1,4 +1,4 @@
-use ktls_recvmsg::{ControlMessageOwned, MsgFlags, SockaddrIn};
+use ktls_recvmsg::{recvmsg, ControlMessageOwned, Errno, MsgFlags, SockaddrIn};
 use std::{
     io::{self, IoSliceMut},
     os::unix::prelude::AsRawFd,
@@ -100,20 +100,23 @@ where
                 // could be a control message, let's check
                 let fd = this.inner.as_raw_fd();
 
-                let mut cmsgspace =
-                    [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<u8>() as _) as _ }];
+                // XXX: recvmsg wants a `&mut Vec<u8>` so it's able to resize it
+                // I guess? Or so there's a clear separation between uninitialized
+                // and initialized? We could probably get read of that heap alloc, idk.
+
+                // let mut cmsgspace =
+                //     [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<u8>() as _) as _ }];
+                let mut cmsgspace = Vec::with_capacity(unsafe {
+                    libc::CMSG_SPACE(std::mem::size_of::<u8>() as _) as _
+                });
+
                 let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
                 let flags = MsgFlags::empty();
 
-                let r = nix::sys::socket::recvmsg::<SockaddrIn>(
-                    fd,
-                    &mut iov,
-                    Some(&mut cmsgspace),
-                    flags,
-                );
+                let r = recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
                 let r = match r {
                     Ok(r) => r,
-                    Err(nix::errno::Errno::EAGAIN) => {
+                    Err(Errno::EAGAIN) => {
                         unreachable!("expected a control message, got EAGAIN")
                     }
                     Err(e) => {

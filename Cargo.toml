@@ -22,7 +22,6 @@ pin-project-lite = "0.2.9"
 tokio = { version = "1.28.2", features = ["net", "macros", "io-util"] }
 futures = "0.3.28"
 ktls-sys = "1.0.0"
-nix = { version = "0.26.1", features = ["socket", "uio", "net"], default-features = false }
 ktls-recvmsg = { version = "0.1.0", path = "../ktls-recvmsg" }
 
 [dev-dependencies]
@@ -31,7 +30,3 @@ rcgen = "0.10.0"
 socket2 = "0.5.3"
 tokio = { version = "1.28.2", features = ["full"] }
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
-
-[patch.crates-io]
-nix = { git = "https://github.com/fasterthanlime/nix", rev = "004d31c" } # on branch 'sol_tls'
-
