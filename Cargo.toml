@@ -11,7 +11,7 @@ Configures kTLS for tokio-rustls client and server connections.
 """
 
 [dependencies]
-libc = "0.2.146"
+libc = { version = "0.2.148", features = ["const-extern-fn"] }
 thiserror = "1.0.40"
 tracing = "0.1.37"
 tokio-rustls = "0.24.1"
@@ -22,6 +22,7 @@ pin-project-lite = "0.2.9"
 tokio = { version = "1.28.2", features = ["net", "macros", "io-util"] }
 futures = "0.3.28"
 ktls-sys = "1.0.0"
+ktls-recvmsg = { version = "0.1.1" }
 
 [dev-dependencies]
 const-random = "0.1.15"

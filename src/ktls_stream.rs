@@ -1,6 +1,14 @@
-use std::{io, os::unix::prelude::AsRawFd, pin::Pin, task};
+use ktls_recvmsg::{recvmsg, ControlMessageOwned, Errno, MsgFlags, SockaddrIn};
+use std::{
+    io::{self, IoSliceMut},
+    os::unix::prelude::AsRawFd,
+    pin::Pin,
+    task,
+};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::AsyncReadReady;
 
 // A wrapper around `IO` that sends a `close_notify` when shut down or dropped.
 pin_project_lite::pin_project! {
@@ -54,16 +62,16 @@ where
 
 impl<IO> AsyncRead for KtlsStream<IO>
 where
-    IO: AsRawFd + AsyncRead,
+    IO: AsRawFd + AsyncRead + AsyncReadReady,
 {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> task::Poll<io::Result<()>> {
-        tracing::trace!(remaining = %buf.remaining(), "KtlsStream::poll_read");
+        tracing::trace!(buf.remaining = %buf.remaining(), "KtlsStream::poll_read");
 
-        let this = self.project();
+        let mut this = self.project();
 
         if let Some((drain_index, drained)) = this.drained.as_mut() {
             let drained = &drained[*drain_index..];
@@ -79,11 +87,99 @@ where
             }
             cx.waker().wake_by_ref();
 
+            tracing::trace!("KtlsStream::poll_read, returning after drain");
             return task::Poll::Ready(Ok(()));
         }
 
-        tracing::trace!("KtlsStream::poll_read, forwarding to inner IO");
-        this.inner.poll_read(cx, buf)
+        let read_res = this.inner.as_mut().poll_read(cx, buf);
+        if let task::Poll::Ready(Err(e)) = &read_res {
+            // 5 is a generic "input/output error", it happens when
+            // using poll_read on a kTLS socket that just received
+            // a control message
+            if let Some(5) = e.raw_os_error() {
+                // could be a control message, let's check
+                let fd = this.inner.as_raw_fd();
+
+                // XXX: recvmsg wants a `&mut Vec<u8>` so it's able to resize it
+                // I guess? Or so there's a clear separation between uninitialized
+                // and initialized? We could probably get read of that heap alloc, idk.
+
+                // let mut cmsgspace =
+                //     [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<u8>() as _) as _ }];
+                let mut cmsgspace = Vec::with_capacity(unsafe {
+                    libc::CMSG_SPACE(std::mem::size_of::<u8>() as _) as _
+                });
+
+                let mut iov = [IoSliceMut::new(buf.initialize_unfilled())];
+                let flags = MsgFlags::empty();
+
+                let r = recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsgspace), flags);
+                let r = match r {
+                    Ok(r) => r,
+                    Err(Errno::EAGAIN) => {
+                        unreachable!("expected a control message, got EAGAIN")
+                    }
+                    Err(e) => {
+                        // ok I guess it really failed then
+                        tracing::trace!(?e, "recvmsg failed");
+                        return Err(e.into()).into();
+                    }
+                };
+                let cmsg = r
+                    .cmsgs()
+                    .next()
+                    .expect("we should've received exactly one control message");
+                match cmsg {
+                    // cf. RFC 5246, Section 6.2.1
+                    // https://datatracker.ietf.org/doc/html/rfc5246#section-6.2.1
+                    ControlMessageOwned::TlsGetRecordType(t) => {
+                        match t {
+                            // change_cipher_spec
+                            20 => {
+                                panic!(
+                                    "received TLS change_cipher_spec, this isn't supported by ktls"
+                                )
+                            }
+                            // alert
+                            21 => {
+                                panic!("received TLS alert, this isn't supported by ktls")
+                            }
+                            // handshake
+                            22 => {
+                                // TODO: this is where we receive TLS 1.3 resumption tickets,
+                                // should those be stored anywhere? I'm not even sure what
+                                // format they have at this point
+                                tracing::trace!(
+                                    "ignoring handshake message (probably a resumption ticket)"
+                                );
+                            }
+                            // application data
+                            23 => {
+                                unreachable!("received TLS application in recvmsg, this is supposed to happen in the poll_read codepath")
+                            }
+                            _ => {
+                                // just ignore the message type then
+                                tracing::trace!("received message_type {t:#?}");
+                            }
+                        }
+                    }
+                    _ => panic!("unexpected cmsg type: {cmsg:#?}"),
+                };
+
+                // FIXME: this is hacky, but can we do better?
+                // after we handled (..ignored) the control message, we don't
+                // know whether the scoket is still ready to be read or not.
+                //
+                // we could try looping (tricky code structure), but we can't,
+                // for example, just call `poll_read`, which might fail not
+                // not with EAGAIN/EWOULDBLOCK, but because _another_ control
+                // message is available.
+                cx.waker().wake_by_ref();
+                return task::Poll::Pending;
+            }
+        }
+
+        read_res
     }
 }
 
