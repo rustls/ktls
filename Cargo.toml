@@ -26,7 +26,7 @@ ktls-recvmsg = { version = "0.1.1" }
 
 [dev-dependencies]
 const-random = "0.1.15"
-rcgen = "0.10.0"
+rcgen = "0.11.3"
 socket2 = "0.5.4"
 tokio = { version = "1.32.0", features = ["full"] }
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
