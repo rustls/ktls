@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.0.2](https://github.com/hapsoc/ktls/compare/v3.0.1...v3.0.2) - 2023-10-02
+
+### Other
+- Upgrade rcgen to 0.11.3
+- Upgrade dependencies
+
 ## 3.0.1 (unreleased)
 
 Fix test suite (follow rustls' `ClientConfig::enable_tickets` transition to
