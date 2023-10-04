@@ -1,12 +1,12 @@
 # ktls
 
-Configures kTLS (kernel TLS) for any type that implements `AsRawFd`, given a
-rustls `ServerConnection`.
-
-## Status
-
+[![Crates.io](https://img.shields.io/crates/v/ktls)](https://crates.io/crates/ktls)
 [![test pipeline](https://github.com/hapsoc/ktls/actions/workflows/test.yml/badge.svg)](https://github.com/hapsoc/ktls/actions/workflows/test.yml?query=branch%3Amain)
 [![Coverage Status (codecov.io)](https://codecov.io/gh/hapsoc/ktls/branch/main/graph/badge.svg)](https://codecov.io/gh/hapsoc/ktls/)
+
+Configures kTLS ([kernel TLS
+offload](https://www.kernel.org/doc/html/latest/networking/tls-offload.html))
+for any type that implements `AsRawFd`, given a rustls `ServerConnection`.
 
 ## License
 
