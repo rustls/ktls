@@ -150,7 +150,9 @@ where
                                         // alerts we should handle are ones with fatal level or a
                                         // close_notify
                                         if alert.len() < 2 {
-                                            panic!("ktls sent an alert with invalid size");
+                                            _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
+                                            unsafe { libc::close(fd) };
+                                            return task::Poll::Ready(Err(std::io::Error::new(io::ErrorKind::InvalidInput, "Ktls sent alert with invalid size")));
                                         }
 
                                         // alert layout: [level, description]
