@@ -146,23 +146,26 @@ async fn server_test(
 
                 // assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
 
-                debug!("Server reading data (1/4)");
+                debug!("Server reading data (1/5)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (2/4)");
+                debug!("Server writing data (2/5)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.flush().await.unwrap();
 
-                debug!("Server reading data (3/4)");
+                debug!("Server reading data (3/5)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (4/4)");
+                debug!("Server writing data (4/5)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.flush().await.unwrap();
+                
+                debug!("Server reading from closed session (5/5)");
+                assert_eq!(stream.read_exact(&mut buf[..1]).await.is_err(), true);
             }
         }
         .instrument(tracing::info_span!("server")),
@@ -189,25 +192,28 @@ async fn server_test(
         .await
         .unwrap();
 
-    debug!("Client writing data (1/4)");
+    debug!("Client writing data (1/5)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Client reading data (2/4)");
+    debug!("Client reading data (2/5)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Client writing data (3/4)");
+    debug!("Client writing data (3/5)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Client reading data (4/4)");
+    debug!("Client reading data (4/5)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
+
+    debug!("Client closing session (5/5)");
+    stream.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -285,15 +291,15 @@ async fn client_test(
                 let mut stream = acceptor.accept(stream).await.unwrap();
                 debug!("Completed TLS handshake");
 
-                debug!("Server reading data (1/4)");
+                debug!("Server reading data (1/5)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (2/4)");
+                debug!("Server writing data (2/5)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
 
-                debug!("Server reading data (3/4)");
+                debug!("Server reading data (3/5)");
                 let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
                 stream.read_exact(&mut buf).await.unwrap();
                 assert_eq!(buf, CLIENT_PAYLOAD);
@@ -303,8 +309,11 @@ async fn client_test(
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
 
-                debug!("Server writing data (4/4)");
+                debug!("Server writing data (4/5)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
+                stream.shutdown().await.unwrap();
+
+                debug!("Server sending close notify (5/5)");
                 stream.shutdown().await.unwrap();
 
                 debug!("Server is happy with the exchange");
@@ -342,27 +351,30 @@ async fn client_test(
     let stream = ktls::config_ktls_client(stream).await.unwrap();
     let mut stream = SpyStream(stream, "client");
 
-    debug!("Client writing data (1/4)");
+    debug!("Client writing data (1/5)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    debug!("Client reading data (2/4)");
+    debug!("Client reading data (2/5)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Client writing data (3/4)");
+    debug!("Client writing data (3/5)");
     stream.write_all(CLIENT_PAYLOAD).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
-    debug!("Client reading data (4/4)");
+    debug!("Client reading data (4/5)");
     let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
+
+    debug!("Client reading from closed session");
+    assert_eq!(stream.read_exact(&mut buf[..1]).await.is_err(), true);
 }
 
 struct SpyStream<IO>(IO, &'static str);
