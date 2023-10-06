@@ -165,7 +165,7 @@ async fn server_test(
                 stream.flush().await.unwrap();
                 
                 debug!("Server reading from closed session (5/5)");
-                assert_eq!(stream.read_exact(&mut buf[..1]).await.is_err(), true);
+                assert!(stream.read_exact(&mut buf[..1]).await.is_err(), "Session still open?");
             }
         }
         .instrument(tracing::info_span!("server")),
@@ -374,7 +374,7 @@ async fn client_test(
     assert_eq!(buf, SERVER_PAYLOAD);
 
     debug!("Client reading from closed session");
-    assert_eq!(stream.read_exact(&mut buf[..1]).await.is_err(), true);
+    assert!(stream.read_exact(&mut buf[..1]).await.is_err(), "Session still open?");
 }
 
 struct SpyStream<IO>(IO, &'static str);
