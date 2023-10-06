@@ -142,7 +142,33 @@ where
                             }
                             // alert
                             21 => {
-                                panic!("received TLS alert, this isn't supported by ktls")
+                                // https://github.com/facebookincubator/fizz/blob/fff6d9d49d3c554ab66b58822d1e1fe93e8d80f2/fizz/experimental/ktls/AsyncKTLSSocket.cpp#L144
+                                // We should be able to read from iov now at least 2 bytes
+                                match r.iovs().next() {
+                                    Some(alert) => {
+                                        // https://datatracker.ietf.org/doc/html/rfc5246#section-7.2
+                                        // alerts we should handle are ones with fatal level or a
+                                        // close_notify
+                                        if alert.len() < 2 {
+                                            panic!("ktls sent an alert with invalid size");
+                                        }
+
+                                        // alert layout: [level, description]
+                                        // if we get a close_notify() or an alert with fatal level
+                                        // we should close session
+                                        if alert[1] == 0
+                                            || alert[0] == 2 {
+                                            _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
+                                            unsafe { libc::close(fd) };
+                                        } else {
+                                            // We got something we probably can't handle
+                                        }
+                                        return task::Poll::Ready(Ok(()));
+                                    },
+                                    None => {
+                                        panic!("ktls sent an invalid alert message");
+                                    }
+                                }
                             }
                             // handshake
                             22 => {
