@@ -12,7 +12,7 @@ ci-test:
 # Show coverage locally
 cov:
 	#!/bin/bash -eux
-	cargo llvm-cov nextest --html --output-dir coverage
+	cargo llvm-cov nextest --hide-instantiations --html --output-dir coverage
 
 # Run all tests
 test *args:
