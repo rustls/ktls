@@ -300,6 +300,9 @@ where
             if let Err(e) = crate::ffi::send_close_notify(this.inner.as_raw_fd()) {
                 return Err(e).into();
             }
+            if *this.read_closed {
+                unsafe { libc::close(this.inner.as_raw_fd()) };
+            }
         }
 
         this.inner.poll_shutdown(cx)
