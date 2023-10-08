@@ -63,6 +63,34 @@ where
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive)]
+#[repr(u8)]
+enum TlsAlertLevel {
+    Warning = 1,
+    Fatal = 2,
+    #[num_enum(catch_all)]
+    Other(u8),
+}
+
+#[derive(Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive)]
+#[repr(u8)]
+enum TlsAlertDescription {
+    CloseNotify = 0,
+    #[num_enum(catch_all)]
+    Other(u8),
+}
+
+#[derive(Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive)]
+#[repr(u8)]
+enum TlsRecordType {
+    ChangeCipherSpec = 20,
+    Alert = 21,
+    Handshake = 22,
+    ApplicationData = 23,
+    #[num_enum(catch_all)]
+    Other(u8),
+}
+
 impl<IO> AsyncRead for KtlsStream<IO>
 where
     IO: AsRawFd + AsyncRead + AsyncReadReady,
@@ -75,6 +103,10 @@ where
         tracing::trace!(buf.remaining = %buf.remaining(), "KtlsStream::poll_read");
 
         if self.read_closed {
+            return task::Poll::Ready(Ok(()));
+        }
+
+        if buf.remaining() == 0 {
             return task::Poll::Ready(Ok(()));
         }
 
@@ -136,120 +168,88 @@ where
                     .cmsgs()
                     .next()
                     .expect("we should've received exactly one control message");
-                match cmsg {
-                    // cf. RFC 5246, Section 6.2.1
-                    // https://datatracker.ietf.org/doc/html/rfc5246#section-6.2.1
-                    ControlMessageOwned::TlsGetRecordType(t) => {
-                        match t {
-                            // change_cipher_spec
-                            20 => {
-                                panic!(
-                                    "received TLS change_cipher_spec, this isn't supported by ktls"
-                                )
-                            }
-                            // alert
-                            21 => {
-                                let iov = r.iovs().next().expect("expected data in iovs");
 
+                let record_type = match cmsg {
+                    ControlMessageOwned::TlsGetRecordType(t) => t,
+                    _ => panic!("unexpected cmsg type: {cmsg:#?}"),
+                };
+
+                match TlsRecordType::from_primitive(record_type) {
+                    TlsRecordType::ChangeCipherSpec => {
+                        panic!("change_cipher_spec isn't supported by the ktls crate")
+                    }
+                    TlsRecordType::Alert => {
+                        // the alert level and description are in iovs
+                        let iov = r.iovs().next().expect("expected data in iovs");
+
+                        let (level, description) = match iov {
+                            [] => {
+                                // we have an early return case for that
+                                unreachable!();
+                            }
+                            &[level] => {
                                 // https://github.com/facebookincubator/fizz/blob/fff6d9d49d3c554ab66b58822d1e1fe93e8d80f2/fizz/experimental/ktls/AsyncKTLSSocket.cpp#L144
-                                // We do not buffer alerts that could not be
-                                // fully read.
-                                //
-                                // This situation can only happen if the user
-                                // supplies a buffer smaller than 2 bytes.
-                                //
-                                // If we *start* reading an alert, then it is
-                                // *guaranteed* that the kernel has the actual
-                                // full contents of the alert in the kernel
-                                // buffer, since kTLS operates one record at a
-                                // time (it does not signal socket readability
-                                // until there exists at least one full record).
                                 //
                                 // Since all alerts (even warning-level alerts)
                                 // signal the abort of a TLS session, we do not
                                 // need to worry about additional application
                                 // data.
-                                if iov.len() < 2 {
-                                    *this.read_closed = true;
-                                    *this.write_closed = true;
-                                    if let Err(e) =
-                                        crate::ffi::send_close_notify(this.inner.as_raw_fd())
-                                    {
-                                        return Err(e).into();
-                                    }
-                                    unsafe { libc::close(fd) };
-                                    return task::Poll::Ready(Ok(()));
-                                }
-
-                                #[derive(
-                                    Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive,
-                                )]
-                                #[repr(u8)]
-                                enum AlertLevel {
-                                    Warning = 1,
-                                    Fatal = 2,
-                                    #[num_enum(catch_all)]
-                                    Other(u8),
-                                }
-
-                                #[derive(
-                                    Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive,
-                                )]
-                                #[repr(u8)]
-                                enum AlertDescription {
-                                    CloseNotify = 0,
-                                    #[num_enum(catch_all)]
-                                    Other(u8),
-                                }
-
-                                let [level, description]: [u8; 2] = iov[..2]
-                                    .try_into()
-                                    .expect("expected at least 2 bytes in iov");
-
-                                let level = AlertLevel::from_primitive(level);
-                                let description = AlertDescription::from_primitive(description);
-
-                                match (level, description) {
-                                    // https://datatracker.ietf.org/doc/html/rfc5246#section-7.2
-                                    // alerts we should handle are ones with fatal level or a
-                                    // close_notify
-                                    (_, AlertDescription::CloseNotify) | (AlertLevel::Fatal, _) => {
-                                        tracing::trace!(?level, ?description, "got TLS alert");
-                                        *this.read_closed = true;
-                                        *this.write_closed = true;
-                                        if let Err(e) =
-                                            crate::ffi::send_close_notify(this.inner.as_raw_fd())
-                                        {
-                                            return Err(e).into();
-                                        }
-                                        unsafe { libc::close(fd) };
-                                    }
-                                    _ => {
-                                        // we got something we probably can't handle
-                                    }
-                                }
-                                return task::Poll::Ready(Ok(()));
+                                //
+                                // If we only have half the alert (because the
+                                // user passed a buffer of size 1), just assume
+                                // it's a close_notify
+                                (
+                                    TlsAlertLevel::from_primitive(level),
+                                    TlsAlertDescription::CloseNotify,
+                                )
                             }
-                            // handshake
-                            22 => {
-                                // TODO: this is where we receive TLS 1.3 resumption tickets,
-                                // should those be stored anywhere? I'm not even sure what
-                                // format they have at this point
-                                tracing::trace!(
-                                    "ignoring handshake message (probably a resumption ticket)"
+                            &[level, description] => (
+                                TlsAlertLevel::from_primitive(level),
+                                TlsAlertDescription::from_primitive(description),
+                            ),
+                            _ => {
+                                unreachable!(
+                                    "TLS alerts are exactly 2 bytes, your kTLS is misbehaving"
                                 );
                             }
-                            // application data
-                            23 => {
-                                unreachable!("received TLS application in recvmsg, this is supposed to happen in the poll_read codepath")
+                        };
+
+                        match (level, description) {
+                            // https://datatracker.ietf.org/doc/html/rfc5246#section-7.2
+                            // alerts we should handle are ones with fatal level or a
+                            // close_notify
+                            (_, TlsAlertDescription::CloseNotify) | (TlsAlertLevel::Fatal, _) => {
+                                tracing::trace!(?level, ?description, "got TLS alert");
+                                *this.read_closed = true;
+                                *this.write_closed = true;
+                                if let Err(e) =
+                                    crate::ffi::send_close_notify(this.inner.as_raw_fd())
+                                {
+                                    return Err(e).into();
+                                }
+                                unsafe { libc::close(fd) };
                             }
                             _ => {
-                                // just ignore the message type then
-                                tracing::trace!("received message_type {t:#?}");
+                                // we got something we probably can't handle
                             }
                         }
+                        return task::Poll::Ready(Ok(()));
                     }
-                    _ => panic!("unexpected cmsg type: {cmsg:#?}"),
+                    TlsRecordType::Handshake => {
+                        // TODO: this is where we receive TLS 1.3 resumption tickets,
+                        // should those be stored anywhere? I'm not even sure what
+                        // format they have at this point
+                        tracing::trace!(
+                            "ignoring handshake message (probably a resumption ticket)"
+                        );
+                    }
+                    TlsRecordType::ApplicationData => {
+                        unreachable!("received TLS application in recvmsg, this is supposed to happen in the poll_read codepath")
+                    }
+                    TlsRecordType::Other(t) => {
+                        // just ignore the record?
+                        tracing::trace!("received record_type {t:#?}");
+                    }
                 };
 
                 // FIXME: this is hacky, but can we do better?
