@@ -297,15 +297,15 @@ where
         let this = self.project();
 
         if !*this.write_closed {
+            // they didn't hang up on us, we're nicely being asked to shut down,
+            // let's send a close_notify (and not wait for them to send it back)
             *this.write_closed = true;
             if let Err(e) = crate::ffi::send_close_notify(this.inner.as_raw_fd()) {
                 return Err(e).into();
             }
-            if *this.read_closed {
-                unsafe { libc::close(this.inner.as_raw_fd()) };
-            }
         }
 
+        // this ends up closing the inner file descriptor no matter what
         this.inner.poll_shutdown(cx)
     }
 }
