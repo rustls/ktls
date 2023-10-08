@@ -202,6 +202,10 @@ async fn server_test_inner(
                     stream.write_all(SERVER_PAYLOAD).await.unwrap_err();
                 }
             }
+
+            assert_eq!(stream.get_ref().1, "server");
+            assert_eq!(stream.get_mut().1, "server");
+            assert_eq!(stream.into_raw().1 .1, "server");
         }
         .instrument(tracing::info_span!("server")),
     );
