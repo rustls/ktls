@@ -90,6 +90,12 @@ async fn ktls_server_rustls_client_tls_1_2_ecdhe_chacha20_poly1305() {
     server_test(&TLS12, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256).await;
 }
 
+#[derive(Clone, Copy)]
+enum ServerTestFlavor {
+    ClientCloses,
+    ServerCloses,
+}
+
 async fn server_test(
     protocol_version: &'static SupportedProtocolVersion,
     cipher_suite: SupportedCipherSuite,
@@ -101,6 +107,25 @@ async fn server_test(
         .pretty()
         .init();
 
+    server_test_inner(
+        protocol_version,
+        cipher_suite,
+        ServerTestFlavor::ClientCloses,
+    )
+    .await;
+    server_test_inner(
+        protocol_version,
+        cipher_suite,
+        ServerTestFlavor::ServerCloses,
+    )
+    .await;
+}
+
+async fn server_test_inner(
+    protocol_version: &'static SupportedProtocolVersion,
+    cipher_suite: SupportedCipherSuite,
+    flavor: ServerTestFlavor,
+) {
     let subject_alt_names = vec!["localhost".to_string()];
 
     let cert = generate_simple_self_signed(subject_alt_names).unwrap();
@@ -126,49 +151,58 @@ async fn server_test(
     let ln = TcpListener::bind("[::]:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
 
-    tokio::spawn(
+    let jh = tokio::spawn(
         async move {
-            loop {
-                let (stream, addr) = ln.accept().await.unwrap();
-                debug!("Accepted TCP conn from {}", addr);
-                let stream = SpyStream(stream, "server");
-                let stream = CorkStream::new(stream);
+            let (stream, addr) = ln.accept().await.unwrap();
+            debug!("Accepted TCP conn from {}", addr);
+            let stream = SpyStream(stream, "server");
+            let stream = CorkStream::new(stream);
 
-                let stream = acceptor.accept(stream).await.unwrap();
-                debug!("Completed TLS handshake");
+            let stream = acceptor.accept(stream).await.unwrap();
+            debug!("Completed TLS handshake");
 
-                // sleep for a bit to let client write more data and stress test
-                // the draining logic
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            // sleep for a bit to let client write more data and stress test
+            // the draining logic
+            tokio::time::sleep(Duration::from_millis(100)).await;
 
-                let mut stream = ktls::config_ktls_server(stream).await.unwrap();
-                debug!("Configured kTLS");
+            let mut stream = ktls::config_ktls_server(stream).await.unwrap();
+            debug!("Configured kTLS");
 
-                // assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
+            // assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
 
-                debug!("Server reading data (1/5)");
-                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
-                stream.read_exact(&mut buf).await.unwrap();
-                assert_eq!(buf, CLIENT_PAYLOAD);
+            debug!("Server reading data (1/5)");
+            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (2/5)");
-                stream.write_all(SERVER_PAYLOAD).await.unwrap();
-                stream.flush().await.unwrap();
+            debug!("Server writing data (2/5)");
+            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            stream.flush().await.unwrap();
 
-                debug!("Server reading data (3/5)");
-                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
-                stream.read_exact(&mut buf).await.unwrap();
-                assert_eq!(buf, CLIENT_PAYLOAD);
+            debug!("Server reading data (3/5)");
+            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (4/5)");
-                stream.write_all(SERVER_PAYLOAD).await.unwrap();
-                stream.flush().await.unwrap();
+            debug!("Server writing data (4/5)");
+            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            stream.flush().await.unwrap();
 
-                debug!("Server reading from closed session (5/5)");
-                assert!(
-                    stream.read_exact(&mut buf[..1]).await.is_err(),
-                    "Session still open?"
-                );
+            match flavor {
+                ServerTestFlavor::ClientCloses => {
+                    debug!("Server reading from closed session (5/5)");
+                    assert!(
+                        stream.read_exact(&mut buf[..1]).await.is_err(),
+                        "Session still open?"
+                    );
+                }
+                ServerTestFlavor::ServerCloses => {
+                    debug!("Server sending close notify (5/5)");
+                    stream.shutdown().await.unwrap();
+
+                    debug!("Server trying to write after closing");
+                    stream.write_all(SERVER_PAYLOAD).await.unwrap_err();
+                }
             }
         }
         .instrument(tracing::info_span!("server")),
@@ -215,8 +249,24 @@ async fn server_test(
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Client closing session (5/5)");
-    stream.shutdown().await.unwrap();
+    match flavor {
+        ServerTestFlavor::ClientCloses => {
+            debug!("Client sending close notify (5/5)");
+            stream.shutdown().await.unwrap();
+
+            debug!("Client trying to write after closing");
+            stream.write_all(CLIENT_PAYLOAD).await.unwrap_err();
+        }
+        ServerTestFlavor::ServerCloses => {
+            debug!("Client reading from closed session (5/5)");
+            assert!(
+                stream.read_exact(&mut buf[..1]).await.is_err(),
+                "Session still open?"
+            );
+        }
+    }
+
+    jh.await.unwrap();
 }
 
 #[tokio::test]
@@ -309,41 +359,42 @@ async fn client_test_inner(
     let ln = TcpListener::bind("[::]:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
 
-    tokio::spawn(
+    let jh = tokio::spawn(
         async move {
-            loop {
-                let (stream, addr) = ln.accept().await.unwrap();
+            let (stream, addr) = ln.accept().await.unwrap();
 
-                debug!("Accepted TCP conn from {}", addr);
-                let mut stream = acceptor.accept(stream).await.unwrap();
-                debug!("Completed TLS handshake");
+            debug!("Accepted TCP conn from {}", addr);
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            debug!("Completed TLS handshake");
 
-                debug!("Server reading data (1/5)");
-                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
-                stream.read_exact(&mut buf).await.unwrap();
-                assert_eq!(buf, CLIENT_PAYLOAD);
+            debug!("Server reading data (1/5)");
+            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(buf, CLIENT_PAYLOAD);
 
-                debug!("Server writing data (2/5)");
-                stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            debug!("Server writing data (2/5)");
+            stream.write_all(SERVER_PAYLOAD).await.unwrap();
 
-                debug!("Server reading data (3/5)");
-                let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
-                stream.read_exact(&mut buf).await.unwrap();
-                assert_eq!(buf, CLIENT_PAYLOAD);
+            debug!("Server reading data (3/5)");
+            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(buf, CLIENT_PAYLOAD);
 
-                for _i in 0..3 {
-                    debug!("Making the client wait (to make busywaits REALLY obvious)");
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-
-                debug!("Server writing data (4/5)");
-                stream.write_all(SERVER_PAYLOAD).await.unwrap();
-
-                debug!("Server sending close notify (5/5)");
-                stream.shutdown().await.unwrap();
-
-                debug!("Server is happy with the exchange");
+            for _i in 0..3 {
+                debug!("Making the client wait (to make busywaits REALLY obvious)");
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
+
+            debug!("Server writing data (4/5)");
+            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+
+            debug!("Server sending close notify (5/5)");
+            stream.shutdown().await.unwrap();
+
+            debug!("Server trying to write after close notify");
+            stream.write_all(SERVER_PAYLOAD).await.unwrap_err();
+
+            debug!("Server is happy with the exchange");
         }
         .instrument(tracing::info_span!("server")),
     );
@@ -408,6 +459,8 @@ async fn client_test_inner(
         buf.len()
     );
     assert!(stream.read_exact(buf).await.is_err(), "Session still open?");
+
+    jh.await.unwrap();
 }
 
 struct SpyStream<IO>(IO, &'static str);

@@ -228,6 +228,7 @@ where
                                     return Err(e).into();
                                 }
                                 unsafe { libc::close(fd) };
+                                return task::Poll::Ready(Ok(()));
                             }
                             _ => {
                                 // we got something we probably can't handle
