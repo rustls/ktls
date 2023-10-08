@@ -227,7 +227,9 @@ where
                                 {
                                     return Err(e).into();
                                 }
-                                unsafe { libc::close(fd) };
+                                // the file descriptor will be closed when the stream is dropped,
+                                // we already protect against writes-after-close_notify through
+                                // the write_closed flag
                                 return task::Poll::Ready(Ok(()));
                             }
                             _ => {
