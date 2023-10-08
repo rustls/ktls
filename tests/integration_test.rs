@@ -168,8 +168,6 @@ async fn server_test_inner(
             let mut stream = ktls::config_ktls_server(stream).await.unwrap();
             debug!("Configured kTLS");
 
-            // assert!(stream.drained_remaining() < CLIENT_PAYLOAD.len());
-
             debug!("Server reading data (1/5)");
             let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
             stream.read_exact(&mut buf).await.unwrap();
