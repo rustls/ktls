@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.0.0](https://github.com/hapsoc/ktls/compare/v3.0.2...v4.0.0) - 2023-10-08
+
+### Fixed
+- [**breaking**] Remove drained_remaining public method
+
+### Other
+- Add more test coverage
+- Remove more explicit libc::close calls
+- Clarifies what this.inner.poll_shutdown does
+- Improve integration tests: try reading/writing after close, catch errors from both sides
+- Don't forget to close fd on writer side
+- Simplify/clarify code around alerts
+- Use enums to 'parse' TLS alerts
+- Depend on ktls-recvmsg v0.1.3
+- Remove panic, ktls may send unfinished alert msg
+- assert instead of asser_eq
+- Adding edge case in integration test for session shutdown
+- Properly handle critical alerts
+- Add crates.io badge
+- Use Rust stable for tests
+
 ## [3.0.2](https://github.com/hapsoc/ktls/compare/v3.0.1...v3.0.2) - 2023-10-02
 
 ### Other
