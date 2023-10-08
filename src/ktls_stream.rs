@@ -1,4 +1,5 @@
 use ktls_recvmsg::{recvmsg, ControlMessageOwned, Errno, MsgFlags, SockaddrIn};
+use num_enum::FromPrimitive;
 use std::{
     io::{self, IoSliceMut},
     os::unix::prelude::AsRawFd,
@@ -18,7 +19,8 @@ pin_project_lite::pin_project! {
     {
         #[pin]
         inner: IO,
-        close_notified: bool,
+        write_closed: bool,
+        read_closed: bool,
         drained: Option<(usize, Vec<u8>)>,
     }
 }
@@ -30,7 +32,8 @@ where
     pub fn new(inner: IO, drained: Option<Vec<u8>>) -> Self {
         Self {
             inner,
-            close_notified: false,
+            write_closed: false,
+            read_closed: false,
             drained: drained.map(|drained| (0, drained)),
         }
     }
@@ -70,6 +73,10 @@ where
         buf: &mut ReadBuf<'_>,
     ) -> task::Poll<io::Result<()>> {
         tracing::trace!(buf.remaining = %buf.remaining(), "KtlsStream::poll_read");
+
+        if self.read_closed {
+            return task::Poll::Ready(Ok(()));
+        }
 
         let mut this = self.project();
 
@@ -142,35 +149,86 @@ where
                             }
                             // alert
                             21 => {
-                                // https://github.com/facebookincubator/fizz/blob/fff6d9d49d3c554ab66b58822d1e1fe93e8d80f2/fizz/experimental/ktls/AsyncKTLSSocket.cpp#L144
-                                // We should be able to read from iov now at least 2 bytes
-                                match r.iovs().next() {
-                                    Some(alert) => {
-                                        // https://datatracker.ietf.org/doc/html/rfc5246#section-7.2
-                                        // alerts we should handle are ones with fatal level or a
-                                        // close_notify
-                                        if alert.len() < 2 {
-                                            _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
-                                            unsafe { libc::close(fd) };
-                                            return task::Poll::Ready(Err(std::io::Error::new(io::ErrorKind::InvalidInput, "Ktls sent alert with invalid size")));
-                                        }
+                                let iov = r.iovs().next().expect("expected data in iovs");
 
-                                        // alert layout: [level, description]
-                                        // if we get a close_notify() or an alert with fatal level
-                                        // we should close session
-                                        if alert[1] == 0
-                                            || alert[0] == 2 {
-                                            _ = crate::ffi::send_close_notify(this.inner.as_raw_fd());
-                                            unsafe { libc::close(fd) };
-                                        } else {
-                                            // We got something we probably can't handle
+                                // https://github.com/facebookincubator/fizz/blob/fff6d9d49d3c554ab66b58822d1e1fe93e8d80f2/fizz/experimental/ktls/AsyncKTLSSocket.cpp#L144
+                                // We do not buffer alerts that could not be
+                                // fully read.
+                                //
+                                // This situation can only happen if the user
+                                // supplies a buffer smaller than 2 bytes.
+                                //
+                                // If we *start* reading an alert, then it is
+                                // *guaranteed* that the kernel has the actual
+                                // full contents of the alert in the kernel
+                                // buffer, since kTLS operates one record at a
+                                // time (it does not signal socket readability
+                                // until there exists at least one full record).
+                                //
+                                // Since all alerts (even warning-level alerts)
+                                // signal the abort of a TLS session, we do not
+                                // need to worry about additional application
+                                // data.
+                                if iov.len() < 2 {
+                                    *this.read_closed = true;
+                                    *this.write_closed = true;
+                                    if let Err(e) =
+                                        crate::ffi::send_close_notify(this.inner.as_raw_fd())
+                                    {
+                                        return Err(e).into();
+                                    }
+                                    unsafe { libc::close(fd) };
+                                    return task::Poll::Ready(Ok(()));
+                                }
+
+                                #[derive(
+                                    Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive,
+                                )]
+                                #[repr(u8)]
+                                enum AlertLevel {
+                                    Warning = 1,
+                                    Fatal = 2,
+                                    #[num_enum(catch_all)]
+                                    Other(u8),
+                                }
+
+                                #[derive(
+                                    Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive,
+                                )]
+                                #[repr(u8)]
+                                enum AlertDescription {
+                                    CloseNotify = 0,
+                                    #[num_enum(catch_all)]
+                                    Other(u8),
+                                }
+
+                                let [level, description]: [u8; 2] = iov[..2]
+                                    .try_into()
+                                    .expect("expected at least 2 bytes in iov");
+
+                                let level = AlertLevel::from_primitive(level);
+                                let description = AlertDescription::from_primitive(description);
+
+                                match (level, description) {
+                                    // https://datatracker.ietf.org/doc/html/rfc5246#section-7.2
+                                    // alerts we should handle are ones with fatal level or a
+                                    // close_notify
+                                    (_, AlertDescription::CloseNotify) | (AlertLevel::Fatal, _) => {
+                                        tracing::trace!(?level, ?description, "got TLS alert");
+                                        *this.read_closed = true;
+                                        *this.write_closed = true;
+                                        if let Err(e) =
+                                            crate::ffi::send_close_notify(this.inner.as_raw_fd())
+                                        {
+                                            return Err(e).into();
                                         }
-                                        return task::Poll::Ready(Ok(()));
-                                    },
-                                    None => {
-                                        panic!("ktls sent an invalid alert message");
+                                        unsafe { libc::close(fd) };
+                                    }
+                                    _ => {
+                                        // we got something we probably can't handle
                                     }
                                 }
+                                return task::Poll::Ready(Ok(()));
                             }
                             // handshake
                             22 => {
@@ -196,7 +254,7 @@ where
 
                 // FIXME: this is hacky, but can we do better?
                 // after we handled (..ignored) the control message, we don't
-                // know whether the scoket is still ready to be read or not.
+                // know whether the socket is still ready to be read or not.
                 //
                 // we could try looping (tricky code structure), but we can't,
                 // for example, just call `poll_read`, which might fail not
@@ -220,6 +278,10 @@ where
         cx: &mut task::Context<'_>,
         buf: &[u8],
     ) -> task::Poll<io::Result<usize>> {
+        if self.write_closed {
+            return task::Poll::Ready(Ok(0));
+        }
+
         self.project().inner.poll_write(cx, buf)
     }
 
@@ -233,10 +295,8 @@ where
     ) -> task::Poll<io::Result<()>> {
         let this = self.project();
 
-        if !*this.close_notified {
-            // setting this optimistically, I don't think calling it more than
-            // once is going to help if it failed the first time.
-            *this.close_notified = true;
+        if !*this.write_closed {
+            *this.write_closed = true;
             if let Err(e) = crate::ffi::send_close_notify(this.inner.as_raw_fd()) {
                 return Err(e).into();
             }

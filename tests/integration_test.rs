@@ -163,9 +163,12 @@ async fn server_test(
                 debug!("Server writing data (4/5)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
                 stream.flush().await.unwrap();
-                
+
                 debug!("Server reading from closed session (5/5)");
-                assert!(stream.read_exact(&mut buf[..1]).await.is_err(), "Session still open?");
+                assert!(
+                    stream.read_exact(&mut buf[..1]).await.is_err(),
+                    "Session still open?"
+                );
             }
         }
         .instrument(tracing::info_span!("server")),
@@ -246,6 +249,11 @@ async fn ktls_client_rustls_server_tls_1_2_ecdhe_chacha20_poly1305() {
     client_test(&TLS12, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256).await;
 }
 
+enum ClientTestFlavor {
+    ShortLastBuffer,
+    LongLastBuffer,
+}
+
 async fn client_test(
     protocol_version: &'static SupportedProtocolVersion,
     cipher_suite: SupportedCipherSuite,
@@ -257,6 +265,25 @@ async fn client_test(
         .pretty()
         .init();
 
+    client_test_inner(
+        protocol_version,
+        cipher_suite,
+        ClientTestFlavor::ShortLastBuffer,
+    )
+    .await;
+    client_test_inner(
+        protocol_version,
+        cipher_suite,
+        ClientTestFlavor::LongLastBuffer,
+    )
+    .await;
+}
+
+async fn client_test_inner(
+    protocol_version: &'static SupportedProtocolVersion,
+    cipher_suite: SupportedCipherSuite,
+    flavor: ClientTestFlavor,
+) {
     let subject_alt_names = vec!["localhost".to_string()];
 
     let cert = generate_simple_self_signed(subject_alt_names).unwrap();
@@ -311,7 +338,6 @@ async fn client_test(
 
                 debug!("Server writing data (4/5)");
                 stream.write_all(SERVER_PAYLOAD).await.unwrap();
-                stream.shutdown().await.unwrap();
 
                 debug!("Server sending close notify (5/5)");
                 stream.shutdown().await.unwrap();
@@ -373,8 +399,15 @@ async fn client_test(
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, SERVER_PAYLOAD);
 
-    debug!("Client reading from closed session");
-    assert!(stream.read_exact(&mut buf[..1]).await.is_err(), "Session still open?");
+    let buf = match flavor {
+        ClientTestFlavor::ShortLastBuffer => &mut buf[..1],
+        ClientTestFlavor::LongLastBuffer => &mut buf[..2],
+    };
+    debug!(
+        "Client reading from closed session (with buffer of size {})",
+        buf.len()
+    );
+    assert!(stream.read_exact(buf).await.is_err(), "Session still open?");
 }
 
 struct SpyStream<IO>(IO, &'static str);
