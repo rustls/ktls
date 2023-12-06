@@ -8,9 +8,14 @@ on:
 
 jobs:
   test:
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
+    - name: Set up sccache
+      uses: mozilla-actions/sccache-action@v0.0.3
       - name: Run tests
         run: |
           cd ${{ github.workspace }}
