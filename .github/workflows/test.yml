@@ -2,24 +2,37 @@ name: test
 
 on:
   push:
-    branches:
-      - main
+    branches: ["main"]
   pull_request:
+  merge_group:
 
 jobs:
   test:
+    name: test
+    runs-on: ubuntu-latest
     env:
       RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: true
       CARGO_INCREMENTAL: 0
-      CARGO_HOME: /vol/cargo
-    runs-on: self-hosted
     steps:
       - name: Check out repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+      - name: Set up sccache (part 1)
+        uses: mozilla-actions/sccache-action@v0.0.3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up sccache (part 2)
+        run: sccache --start-server
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov,cargo-nextest
       - name: Run tests
         run: |
           cd ${{ github.workspace }}
-          sccache --zero-stats
           cargo clippy
           just ci-test
-          sccache --show-stats
+      - name: Upload coverage information
+        run: |
+          curl -Os https://uploader.codecov.io/latest/linux/codecov 
+          chmod +x codecov
+          ./codecov

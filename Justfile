@@ -7,7 +7,6 @@ _default:
 ci-test:
 	#!/bin/bash -eux
 	cargo llvm-cov nextest --lcov --output-path coverage.lcov
-	codecov
 
 # Run all tests with cargo nextest
 test *args:
