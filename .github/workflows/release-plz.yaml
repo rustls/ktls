@@ -10,7 +10,7 @@ on:
 
 jobs:
   release-plz:
-    name: Release-plz
+    name: release-plz
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
