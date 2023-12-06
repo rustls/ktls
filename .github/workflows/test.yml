@@ -2,25 +2,17 @@ name: test
 
 on:
   push:
-    branches:
-      - main
+    branches: ["main"]
   pull_request:
   merge_group:
 
 jobs:
   test:
-    env:
-      RUSTC_WRAPPER: sccache
-      CARGO_INCREMENTAL: 0
-      CARGO_HOME: /vol/cargo
-    runs-on: self-hosted
     steps:
       - name: Check out repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Run tests
         run: |
           cd ${{ github.workspace }}
-          sccache --zero-stats
           cargo clippy
           just ci-test
-          sccache --show-stats
