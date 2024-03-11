@@ -14,11 +14,10 @@ use rustls::{
     RootCertStore, ServerConfig, SupportedCipherSuite,
 };
 
-#[cfg(feature = "ring")]
-use rustls::crypto::ring::cipher_suite as ring_cipher_suite;
-
 #[cfg(feature = "aws_lc_rs")]
-use rustls::crypto::aws_lc_rs::cipher_suite as aws_lc_rs_cipher_suite;
+use rustls::crypto::aws_lc_rs::cipher_suite;
+#[cfg(feature = "ring")]
+use rustls::crypto::ring::cipher_suite;
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -58,30 +57,15 @@ lazy_static! {
 
 fn all_suites() -> Vec<SupportedCipherSuite> {
     vec![
-        #[cfg(feature = "ring")]
-        ring_cipher_suite::TLS13_AES_128_GCM_SHA256,
-        #[cfg(feature = "ring")]
-        ring_cipher_suite::TLS13_AES_256_GCM_SHA384,
-        #[cfg(feature = "ring")]
-        ring_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        #[cfg(all(feature = "ring", feature = "tls12"))]
-        ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        #[cfg(all(feature = "ring", feature = "tls12"))]
-        ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        #[cfg(all(feature = "ring", feature = "tls12"))]
-        ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-        #[cfg(feature = "aws_lc_rs")]
-        aws_lc_rs_cipher_suite::TLS13_AES_128_GCM_SHA256,
-        #[cfg(feature = "aws_lc_rs")]
-        aws_lc_rs_cipher_suite::TLS13_AES_256_GCM_SHA384,
-        #[cfg(feature = "aws_lc_rs")]
-        aws_lc_rs_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
-        aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
-        aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
-        aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        cipher_suite::TLS13_AES_128_GCM_SHA256,
+        cipher_suite::TLS13_AES_256_GCM_SHA384,
+        cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        #[cfg(feature = "tls12")]
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        #[cfg(feature = "tls12")]
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        #[cfg(feature = "tls12")]
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
     ]
 }
 
@@ -107,67 +91,7 @@ enum ServerTestFlavor {
     ServerCloses,
 }
 
-// async fn server_test(
-//     protocol_version: &'static SupportedProtocolVersion,
-//     cipher_suite: SupportedCipherSuite,
-//     crypto_provider: KtlsCryptoProvider,
-// ) {
-
-//     server_test_inner(
-//         protocol_version,
-//         cipher_suite,
-//         crypto_provider,
-//         ServerTestFlavor::ClientCloses,
-//     )
-//     .await;
-//     server_test_inner(
-//         protocol_version,
-//         cipher_suite,
-//         crypto_provider,
-//         ServerTestFlavor::ServerCloses,
-//     )
-//     .await;
-// }
-
-#[derive(Clone, Copy, Debug)]
-enum KtlsCryptoProvider {
-    Ring,
-    AwsLcRs,
-}
-
-impl KtlsCryptoProvider {
-    fn single_suite(self, suite: KtlsCipherSuite) -> Arc<CryptoProvider> {
-        // clippy look away
-        #[allow(clippy::never_loop)]
-        Arc::new(CryptoProvider {
-            cipher_suites: vec![match self {
-                Self::Ring => suite.as_ring_suite(),
-                Self::AwsLcRs => suite.as_aws_lc_rs_suite(),
-            }],
-            ..loop {
-                match self {
-                    Self::Ring => {
-                        #[cfg(feature = "ring")]
-                        break rustls::crypto::ring::default_provider();
-                    }
-
-                    Self::AwsLcRs => {
-                        #[cfg(feature = "aws_lc_rs")]
-                        break rustls::crypto::aws_lc_rs::default_provider();
-                    }
-                };
-
-                panic!("support for {self:?} not built in")
-            }
-        })
-    }
-}
-
 #[test_case::test_matrix(
-    [
-        KtlsCryptoProvider::Ring,
-        KtlsCryptoProvider::AwsLcRs,
-    ],
     [
         KtlsVersion::TLS12,
         KtlsVersion::TLS13,
@@ -183,12 +107,7 @@ impl KtlsCryptoProvider {
     ]
 )]
 #[tokio::test]
-async fn server_tests(
-    crypto_provider: KtlsCryptoProvider,
-    version: KtlsVersion,
-    cipher_type: KtlsCipherType,
-    flavor: ServerTestFlavor,
-) {
+async fn server_tests(version: KtlsVersion, cipher_type: KtlsCipherType, flavor: ServerTestFlavor) {
     if matches!(version, KtlsVersion::TLS12) && !cfg!(feature = "tls12") {
         println!("Skipping...");
         return;
@@ -199,29 +118,10 @@ async fn server_tests(
         typ: cipher_type,
     };
 
-    match &crypto_provider {
-        KtlsCryptoProvider::Ring => {
-            if !cfg!(feature = "ring") {
-                println!("Skipping (ring not built-in)");
-                return;
-            }
-        }
-        KtlsCryptoProvider::AwsLcRs => {
-            if !cfg!(feature = "aws_lc_rs") {
-                println!("Skipping (aws_lc_rs not built-in)");
-                return;
-            }
-        }
-    }
-
-    server_test_inner(cipher_suite, crypto_provider, flavor).await
+    server_test_inner(cipher_suite, flavor).await
 }
 
-async fn server_test_inner(
-    cipher_suite: KtlsCipherSuite,
-    crypto_provider: KtlsCryptoProvider,
-    flavor: ServerTestFlavor,
-) {
+async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlavor) {
     tracing_subscriber::fmt()
         // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
         // .with_env_filter(EnvFilter::new("debug"))
@@ -236,7 +136,7 @@ async fn server_test_inner(
     println!("{}", cert.serialize_private_key_pem());
 
     let mut server_config =
-        ServerConfig::builder_with_provider(crypto_provider.single_suite(cipher_suite))
+        ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
             .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
             .unwrap()
             .with_no_client_auth()
@@ -372,10 +272,6 @@ async fn server_test_inner(
 
 #[test_case::test_matrix(
     [
-        KtlsCryptoProvider::Ring,
-        KtlsCryptoProvider::AwsLcRs,
-    ],
-    [
         KtlsVersion::TLS12,
         KtlsVersion::TLS13,
     ],
@@ -390,12 +286,7 @@ async fn server_test_inner(
     ]
 )]
 #[tokio::test]
-async fn client_tests(
-    crypto_provider: KtlsCryptoProvider,
-    version: KtlsVersion,
-    cipher_type: KtlsCipherType,
-    flavor: ClientTestFlavor,
-) {
+async fn client_tests(version: KtlsVersion, cipher_type: KtlsCipherType, flavor: ClientTestFlavor) {
     if matches!(version, KtlsVersion::TLS12) && !cfg!(feature = "tls12") {
         println!("Skipping...");
         return;
@@ -406,22 +297,7 @@ async fn client_tests(
         typ: cipher_type,
     };
 
-    match &crypto_provider {
-        KtlsCryptoProvider::Ring => {
-            if !cfg!(feature = "ring") {
-                println!("Skipping (ring not built-in)");
-                return;
-            }
-        }
-        KtlsCryptoProvider::AwsLcRs => {
-            if !cfg!(feature = "aws_lc_rs") {
-                println!("Skipping (aws_lc_rs not built-in)");
-                return;
-            }
-        }
-    }
-
-    client_test_inner(cipher_suite, crypto_provider, flavor).await
+    client_test_inner(cipher_suite, flavor).await
 }
 
 enum ClientTestFlavor {
@@ -429,11 +305,7 @@ enum ClientTestFlavor {
     LongLastBuffer,
 }
 
-async fn client_test_inner(
-    cipher_suite: KtlsCipherSuite,
-    crypto_provider: KtlsCryptoProvider,
-    flavor: ClientTestFlavor,
-) {
+async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlavor) {
     tracing_subscriber::fmt()
         // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
         // .with_env_filter(EnvFilter::new("debug"))
@@ -448,7 +320,7 @@ async fn client_test_inner(
     println!("{}", cert.serialize_private_key_pem());
 
     let mut server_config =
-        ServerConfig::builder_with_provider(crypto_provider.single_suite(cipher_suite))
+        ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
             .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
             .unwrap()
             .with_no_client_auth()
@@ -669,4 +541,24 @@ where
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
     }
+}
+
+fn single_suite_provider(cipher_suite: KtlsCipherSuite) -> Arc<CryptoProvider> {
+    let mut provider = {
+        #[cfg(feature = "aws_lc_rs")]
+        {
+            rustls::crypto::aws_lc_rs::default_provider()
+        }
+
+        #[cfg(feature = "ring")]
+        {
+            rustls::crypto::ring::default_provider()
+        }
+    };
+    provider.cipher_suites.clear();
+    provider
+        .cipher_suites
+        .push(cipher_suite.as_supported_cipher_suite());
+
+    Arc::new(provider)
 }

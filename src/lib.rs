@@ -3,11 +3,14 @@ use futures::future::try_join_all;
 use ktls_sys::bindings as sys;
 use rustls::{Connection, SupportedCipherSuite, SupportedProtocolVersion};
 
-#[cfg(feature = "ring")]
-use rustls::crypto::ring::cipher_suite as ring_cipher_suite;
-
+#[cfg(all(not(feature = "ring"), not(feature = "aws_lc_rs")))]
+compile_error!("This crate needs wither the 'ring' or 'aws_lc_rs' feature enabled");
+#[cfg(all(feature = "ring", feature = "aws_lc_rs"))]
+compile_error!("The 'ring' and 'aws_lc_rs' features are mutually exclusive");
 #[cfg(feature = "aws_lc_rs")]
-use rustls::crypto::aws_lc_rs::cipher_suite as aws_lc_rs_cipher_suite;
+use rustls::crypto::aws_lc_rs::cipher_suite;
+#[cfg(feature = "ring")]
+use rustls::crypto::ring::cipher_suite;
 
 use smallvec::SmallVec;
 use std::{
@@ -78,66 +81,28 @@ impl CompatibleCiphers {
         accept_conns_fut: impl Future<Output = ()>,
     ) -> io::Result<()> {
         let ciphers: Vec<(SupportedCipherSuite, &mut bool)> = vec![
-            // aws-lc-rs suites
-            #[cfg(feature = "aws_lc_rs")]
             (
-                aws_lc_rs_cipher_suite::TLS13_AES_128_GCM_SHA256,
+                cipher_suite::TLS13_AES_128_GCM_SHA256,
                 &mut self.tls13.aes_gcm_128,
             ),
-            #[cfg(feature = "aws_lc_rs")]
             (
-                aws_lc_rs_cipher_suite::TLS13_AES_256_GCM_SHA384,
+                cipher_suite::TLS13_AES_256_GCM_SHA384,
                 &mut self.tls13.aes_gcm_256,
             ),
-            #[cfg(feature = "aws_lc_rs")]
             (
-                aws_lc_rs_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+                cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
                 &mut self.tls13.chacha20_poly1305,
             ),
-            #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
             (
-                aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
                 &mut self.tls12.aes_gcm_128,
             ),
-            #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
             (
-                aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
                 &mut self.tls12.aes_gcm_256,
             ),
-            #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
             (
-                aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-                &mut self.tls12.chacha20_poly1305,
-            ),
-            // Ring suites
-            #[cfg(all(not(feature = "aws_lc_rs"), feature = "ring"))]
-            (
-                ring_cipher_suite::TLS13_AES_128_GCM_SHA256,
-                &mut self.tls13.aes_gcm_128,
-            ),
-            #[cfg(all(not(feature = "aws_lc_rs"), feature = "ring"))]
-            (
-                ring_cipher_suite::TLS13_AES_256_GCM_SHA384,
-                &mut self.tls13.aes_gcm_256,
-            ),
-            #[cfg(all(not(feature = "aws_lc_rs"), feature = "ring"))]
-            (
-                ring_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-                &mut self.tls13.chacha20_poly1305,
-            ),
-            #[cfg(all(not(feature = "aws_lc_rs"), all(feature = "ring", feature = "tls12")))]
-            (
-                ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                &mut self.tls12.aes_gcm_128,
-            ),
-            #[cfg(all(not(feature = "aws_lc_rs"), all(feature = "ring", feature = "tls12")))]
-            (
-                ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-                &mut self.tls12.aes_gcm_256,
-            ),
-            #[cfg(all(not(feature = "aws_lc_rs"), all(feature = "ring", feature = "tls12")))]
-            (
-                ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
                 &mut self.tls12.chacha20_poly1305,
             ),
         ];
@@ -429,12 +394,6 @@ impl TryFrom<SupportedCipherSuite> for KtlsCipherSuite {
     type Error = CipherSuiteError;
 
     fn try_from(#[allow(unused)] suite: SupportedCipherSuite) -> Result<Self, Self::Error> {
-        #[cfg(all(not(feature = "ring"), not(feature = "aws_lc_rs")))]
-        {
-            panic!("no crypto provider built in");
-        }
-
-        #[cfg(not(all(not(feature = "ring"), not(feature = "aws_lc_rs"))))]
         {
             let version = match suite {
                 SupportedCipherSuite::Tls12(..) => {
@@ -446,57 +405,22 @@ impl TryFrom<SupportedCipherSuite> for KtlsCipherSuite {
                 SupportedCipherSuite::Tls13(..) => KtlsVersion::TLS13,
             };
 
-            #[allow(clippy::never_loop)]
-            let family = loop {
-                #[cfg(feature = "ring")]
-                {
-                    if suite == ring_cipher_suite::TLS13_AES_128_GCM_SHA256 {
-                        break KtlsCipherType::AesGcm128;
-                    }
-                    if suite == ring_cipher_suite::TLS13_AES_256_GCM_SHA384 {
-                        break KtlsCipherType::AesGcm256;
-                    }
-                    if suite == ring_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256 {
-                        break KtlsCipherType::Chacha20Poly1305;
-                    }
-
-                    if suite == ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
-                        break KtlsCipherType::AesGcm128;
-                    }
-                    if suite == ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 {
-                        break KtlsCipherType::AesGcm256;
-                    }
-                    if suite == ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 {
-                        break KtlsCipherType::Chacha20Poly1305;
-                    }
+            let family = {
+                if suite == cipher_suite::TLS13_AES_128_GCM_SHA256 {
+                    KtlsCipherType::AesGcm128
+                } else if suite == cipher_suite::TLS13_AES_256_GCM_SHA384 {
+                    KtlsCipherType::AesGcm256
+                } else if suite == cipher_suite::TLS13_CHACHA20_POLY1305_SHA256 {
+                    KtlsCipherType::Chacha20Poly1305
+                } else if suite == cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
+                    KtlsCipherType::AesGcm128
+                } else if suite == cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 {
+                    KtlsCipherType::AesGcm256
+                } else if suite == cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 {
+                    KtlsCipherType::Chacha20Poly1305
+                } else {
+                    return Err(CipherSuiteError::UnsupportedCipherSuite(suite));
                 }
-
-                #[cfg(feature = "aws_lc_rs")]
-                {
-                    if suite == aws_lc_rs_cipher_suite::TLS13_AES_128_GCM_SHA256 {
-                        break KtlsCipherType::AesGcm128;
-                    }
-                    if suite == aws_lc_rs_cipher_suite::TLS13_AES_256_GCM_SHA384 {
-                        break KtlsCipherType::AesGcm256;
-                    }
-                    if suite == aws_lc_rs_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256 {
-                        break KtlsCipherType::Chacha20Poly1305;
-                    }
-
-                    if suite == aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
-                        break KtlsCipherType::AesGcm128;
-                    }
-                    if suite == aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 {
-                        break KtlsCipherType::AesGcm256;
-                    }
-                    if suite
-                        == aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-                    {
-                        break KtlsCipherType::Chacha20Poly1305;
-                    }
-                }
-
-                return Err(CipherSuiteError::UnsupportedCipherSuite(suite));
             };
 
             Ok(Self {
@@ -508,60 +432,19 @@ impl TryFrom<SupportedCipherSuite> for KtlsCipherSuite {
 }
 
 impl KtlsCipherSuite {
-    #[cfg(not(feature = "ring"))]
-    pub fn as_ring_suite(&self) -> SupportedCipherSuite {
-        panic!("ring support is not built in");
-    }
-
-    #[cfg(feature = "ring")]
-    pub fn as_ring_suite(&self) -> SupportedCipherSuite {
+    pub fn as_supported_cipher_suite(&self) -> SupportedCipherSuite {
         match self.version {
             KtlsVersion::TLS12 => match self.typ {
-                KtlsCipherType::AesGcm128 => {
-                    ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-                }
-                KtlsCipherType::AesGcm256 => {
-                    ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-                }
+                KtlsCipherType::AesGcm128 => cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                KtlsCipherType::AesGcm256 => cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
                 KtlsCipherType::Chacha20Poly1305 => {
-                    ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+                    cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
                 }
             },
             KtlsVersion::TLS13 => match self.typ {
-                KtlsCipherType::AesGcm128 => ring_cipher_suite::TLS13_AES_128_GCM_SHA256,
-                KtlsCipherType::AesGcm256 => ring_cipher_suite::TLS13_AES_256_GCM_SHA384,
-                KtlsCipherType::Chacha20Poly1305 => {
-                    ring_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256
-                }
-            },
-        }
-    }
-
-    #[cfg(not(feature = "aws_lc_rs"))]
-    pub fn as_aws_lc_rs_suite(&self) -> SupportedCipherSuite {
-        panic!("aws_lc_rs support is not built in");
-    }
-
-    #[cfg(feature = "aws_lc_rs")]
-    pub fn as_aws_lc_rs_suite(&self) -> SupportedCipherSuite {
-        match self.version {
-            KtlsVersion::TLS12 => match self.typ {
-                KtlsCipherType::AesGcm128 => {
-                    aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-                }
-                KtlsCipherType::AesGcm256 => {
-                    aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-                }
-                KtlsCipherType::Chacha20Poly1305 => {
-                    aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-                }
-            },
-            KtlsVersion::TLS13 => match self.typ {
-                KtlsCipherType::AesGcm128 => aws_lc_rs_cipher_suite::TLS13_AES_128_GCM_SHA256,
-                KtlsCipherType::AesGcm256 => aws_lc_rs_cipher_suite::TLS13_AES_256_GCM_SHA384,
-                KtlsCipherType::Chacha20Poly1305 => {
-                    aws_lc_rs_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256
-                }
+                KtlsCipherType::AesGcm128 => cipher_suite::TLS13_AES_128_GCM_SHA256,
+                KtlsCipherType::AesGcm256 => cipher_suite::TLS13_AES_256_GCM_SHA384,
+                KtlsCipherType::Chacha20Poly1305 => cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
             },
         }
     }
