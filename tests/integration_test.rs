@@ -112,12 +112,6 @@ enum ServerTestFlavor {
 //     cipher_suite: SupportedCipherSuite,
 //     crypto_provider: KtlsCryptoProvider,
 // ) {
-//     tracing_subscriber::fmt()
-//         // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
-//         // .with_env_filter(EnvFilter::new("debug"))
-//         .with_env_filter(EnvFilter::new("trace"))
-//         .pretty()
-//         .init();
 
 //     server_test_inner(
 //         protocol_version,
@@ -169,11 +163,72 @@ impl KtlsCryptoProvider {
     }
 }
 
+#[test_case::test_matrix(
+    [
+        KtlsCryptoProvider::Ring,
+        KtlsCryptoProvider::AwsLcRs,
+    ],
+    [
+        KtlsVersion::TLS12,
+        KtlsVersion::TLS13,
+    ],
+    [
+        KtlsCipherType::AesGcm128,
+        KtlsCipherType::AesGcm256,
+        KtlsCipherType::Chacha20Poly1305,
+    ],
+    [
+        ServerTestFlavor::ClientCloses,
+        ServerTestFlavor::ServerCloses,
+    ]
+)]
+#[tokio::test]
+async fn server_tests(
+    crypto_provider: KtlsCryptoProvider,
+    version: KtlsVersion,
+    cipher_type: KtlsCipherType,
+    flavor: ServerTestFlavor,
+) {
+    if matches!(version, KtlsVersion::TLS12) && !cfg!(feature = "tls12") {
+        println!("Skipping...");
+        return;
+    }
+
+    let cipher_suite = KtlsCipherSuite {
+        version,
+        typ: cipher_type,
+    };
+
+    match &crypto_provider {
+        KtlsCryptoProvider::Ring => {
+            if !cfg!(feature = "ring") {
+                println!("Skipping (ring not built-in)");
+                return;
+            }
+        }
+        KtlsCryptoProvider::AwsLcRs => {
+            if !cfg!(feature = "aws_lc_rs") {
+                println!("Skipping (aws_lc_rs not built-in)");
+                return;
+            }
+        }
+    }
+
+    server_test_inner(cipher_suite, crypto_provider, flavor).await
+}
+
 async fn server_test_inner(
     cipher_suite: KtlsCipherSuite,
     crypto_provider: KtlsCryptoProvider,
     flavor: ServerTestFlavor,
 ) {
+    tracing_subscriber::fmt()
+        // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
+        // .with_env_filter(EnvFilter::new("debug"))
+        .with_env_filter(EnvFilter::new("trace"))
+        .pretty()
+        .init();
+
     let subject_alt_names = vec!["localhost".to_string()];
 
     let cert = generate_simple_self_signed(subject_alt_names).unwrap();

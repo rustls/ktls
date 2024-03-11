@@ -805,7 +805,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e153fc89608e0515660ca656fd7f2fa05ca6690f3fd6ad1b0a46e24a8130d838"
 dependencies = [
  "aws-lc-rs",
- "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
