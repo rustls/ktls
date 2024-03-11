@@ -1,5 +1,22 @@
 # Changelog
 
+## [5.0.0](https://github.com/hapsoc/ktls/compare/v4.0.0...v5.0.0) - 2024-03-11
+
+### Added
+- [**breaking**] Upgrade to rustls 0.22.2
+- [**breaking**] Upgrade to tokio-rustls 0.25.0
+
+### Other
+- Get rid of constrandom (it caused 'wrong type' compile error on Rust stable)
+- Print backtraces in CI
+- Add nix flake to have the toolchain everywhere
+- Re-add Cargo.lock as per updated best practices
+- Disable incremental compilation
+- Remove token
+- Install missing tools
+- Use the sccache action
+- Just straight up try running it on GitHub-hosted runners
+
 ## [4.0.0](https://github.com/hapsoc/ktls/compare/v3.0.2...v4.0.0) - 2023-10-08
 
 ### Fixed
