@@ -14,7 +14,8 @@ Configures kTLS for tokio-rustls client and server connections.
 libc = { version = "0.2.153", features = ["const-extern-fn"] }
 thiserror = "1.0.57"
 tracing = "0.1.40"
-tokio-rustls = { git = "https://github.com/rustls/tokio-rustls", rev = "d26502cf444ab2fa24a6d6fe08933abd4a2e8f3e", default-features = false }
+# main branch
+tokio-rustls = { git = "https://github.com/rustls/tokio-rustls", rev = "caf4e8267f0e708a2bfc561dec98a842dc960ba6", default-features = false }
 rustls = { version = "0.23.1", default-features = false }
 smallvec = "1.13.1"
 memoffset = "0.9.0"
@@ -37,6 +38,6 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [features]
 default = ["aws_lc_rs", "tls12"]
-aws_lc_rs = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
+aws_lc_rs = ["rustls/aws_lc_rs", "tokio-rustls/aws_lc_rs"]
 ring = ["rustls/ring", "tokio-rustls/ring"]
 tls12 = ["rustls/tls12", "tokio-rustls/tls12"]

@@ -29,8 +29,7 @@ jobs:
       - name: Run tests
         run: |
           cd ${{ github.workspace }}
-          cargo clippy
-          # show backtraces
+          just check
           RUST_BACKTRACE=1 just ci-test
       - name: Upload coverage information
         run: |

@@ -6,7 +6,9 @@ _default:
 # Run all tests with nextest and cargo-llvm-cov
 ci-test:
 	#!/bin/bash -eux
-	cargo llvm-cov nextest --lcov --output-path coverage.lcov
+	for backend in ring aws_lc_rs; do
+		cargo llvm-cov nextest --no-default-features --features tls12,$backend --lcov --output-path coverage.lcov
+	done
 
 # Show coverage locally
 cov:
@@ -24,6 +26,3 @@ test *args:
 check:
 	cargo clippy --no-default-features --features tls12,ring --all-targets
 	cargo clippy --no-default-features --features tls12,aws_lc_rs --all-targets
-
-check-powerset:
-	cargo hack --feature-powerset --mutually-exclusive-features ring,aws_lc_rs check
