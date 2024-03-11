@@ -6,16 +6,20 @@ use std::{
     time::Duration,
 };
 
-use ktls::{AsyncReadReady, CorkStream};
+use ktls::{AsyncReadReady, CorkStream, KtlsCipherSuite, KtlsCipherType, KtlsVersion};
 use lazy_static::lazy_static;
 use rcgen::generate_simple_self_signed;
 use rustls::{
-    client::Resumption,
-    crypto::{ring::cipher_suite, CryptoProvider},
-    pki_types::CertificateDer,
-    version::{TLS12, TLS13},
-    ClientConfig, RootCertStore, ServerConfig, SupportedCipherSuite, SupportedProtocolVersion,
+    client::Resumption, crypto::CryptoProvider, pki_types::CertificateDer, ClientConfig,
+    RootCertStore, ServerConfig, SupportedCipherSuite,
 };
+
+#[cfg(feature = "ring")]
+use rustls::crypto::ring::cipher_suite as ring_cipher_suite;
+
+#[cfg(feature = "aws_lc_rs")]
+use rustls::crypto::aws_lc_rs::cipher_suite as aws_lc_rs_cipher_suite;
+
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -52,76 +56,49 @@ lazy_static! {
     static ref PAYLOADS: Payloads = Payloads::default();
 }
 
+fn all_suites() -> Vec<SupportedCipherSuite> {
+    vec![
+        #[cfg(feature = "ring")]
+        ring_cipher_suite::TLS13_AES_128_GCM_SHA256,
+        #[cfg(feature = "ring")]
+        ring_cipher_suite::TLS13_AES_256_GCM_SHA384,
+        #[cfg(feature = "ring")]
+        ring_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        #[cfg(all(feature = "ring", feature = "tls12"))]
+        ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        #[cfg(all(feature = "ring", feature = "tls12"))]
+        ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        #[cfg(all(feature = "ring", feature = "tls12"))]
+        ring_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        #[cfg(feature = "aws_lc_rs")]
+        aws_lc_rs_cipher_suite::TLS13_AES_128_GCM_SHA256,
+        #[cfg(feature = "aws_lc_rs")]
+        aws_lc_rs_cipher_suite::TLS13_AES_256_GCM_SHA384,
+        #[cfg(feature = "aws_lc_rs")]
+        aws_lc_rs_cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
+        aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
+        aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        #[cfg(all(feature = "aws_lc_rs", feature = "tls12"))]
+        aws_lc_rs_cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    ]
+}
+
 #[tokio::test]
 async fn compatible_ciphers() {
     let cc = ktls::CompatibleCiphers::new().await.unwrap();
-    for suite in [
-        cipher_suite::TLS13_AES_128_GCM_SHA256,
-        cipher_suite::TLS13_AES_256_GCM_SHA384,
-        cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    ] {
-        assert!(cc.is_compatible(&suite));
+    for suite in all_suites() {
+        assert!(cc.is_compatible(suite));
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn compatible_ciphers_single_thread() {
     let cc = ktls::CompatibleCiphers::new().await.unwrap();
-    for suite in [
-        cipher_suite::TLS13_AES_128_GCM_SHA256,
-        cipher_suite::TLS13_AES_256_GCM_SHA384,
-        cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    ] {
-        assert!(cc.is_compatible(&suite));
+    for suite in all_suites() {
+        assert!(cc.is_compatible(suite));
     }
-}
-
-#[tokio::test]
-async fn ktls_server_rustls_client_tls_1_3_aes_128_gcm() {
-    server_test(&TLS13, cipher_suite::TLS13_AES_128_GCM_SHA256).await;
-}
-
-#[tokio::test]
-async fn ktls_server_rustls_client_tls_1_3_aes_256_gcm() {
-    server_test(&TLS13, cipher_suite::TLS13_AES_256_GCM_SHA384).await;
-}
-
-#[tokio::test]
-async fn ktls_server_rustls_client_tls_1_3_chacha20_poly1305() {
-    server_test(&TLS13, cipher_suite::TLS13_CHACHA20_POLY1305_SHA256).await;
-}
-
-#[tokio::test]
-async fn ktls_server_rustls_client_tls_1_2_ecdhe_aes_128_gcm() {
-    server_test(
-        &TLS12,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn ktls_server_rustls_client_tls_1_2_ecdhe_aes_256_gcm() {
-    server_test(
-        &TLS12,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn ktls_server_rustls_client_tls_1_2_ecdhe_chacha20_poly1305() {
-    server_test(
-        &TLS12,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    )
-    .await;
 }
 
 #[derive(Clone, Copy)]
@@ -130,34 +107,71 @@ enum ServerTestFlavor {
     ServerCloses,
 }
 
-async fn server_test(
-    protocol_version: &'static SupportedProtocolVersion,
-    cipher_suite: SupportedCipherSuite,
-) {
-    tracing_subscriber::fmt()
-        // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
-        // .with_env_filter(EnvFilter::new("debug"))
-        .with_env_filter(EnvFilter::new("trace"))
-        .pretty()
-        .init();
+// async fn server_test(
+//     protocol_version: &'static SupportedProtocolVersion,
+//     cipher_suite: SupportedCipherSuite,
+//     crypto_provider: KtlsCryptoProvider,
+// ) {
+//     tracing_subscriber::fmt()
+//         // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
+//         // .with_env_filter(EnvFilter::new("debug"))
+//         .with_env_filter(EnvFilter::new("trace"))
+//         .pretty()
+//         .init();
 
-    server_test_inner(
-        protocol_version,
-        cipher_suite,
-        ServerTestFlavor::ClientCloses,
-    )
-    .await;
-    server_test_inner(
-        protocol_version,
-        cipher_suite,
-        ServerTestFlavor::ServerCloses,
-    )
-    .await;
+//     server_test_inner(
+//         protocol_version,
+//         cipher_suite,
+//         crypto_provider,
+//         ServerTestFlavor::ClientCloses,
+//     )
+//     .await;
+//     server_test_inner(
+//         protocol_version,
+//         cipher_suite,
+//         crypto_provider,
+//         ServerTestFlavor::ServerCloses,
+//     )
+//     .await;
+// }
+
+#[derive(Clone, Copy, Debug)]
+enum KtlsCryptoProvider {
+    Ring,
+    AwsLcRs,
+}
+
+impl KtlsCryptoProvider {
+    fn single_suite(self, suite: KtlsCipherSuite) -> Arc<CryptoProvider> {
+        // clippy look away
+        #[allow(clippy::never_loop)]
+        Arc::new(CryptoProvider {
+            cipher_suites: vec![match self {
+                Self::Ring => suite.as_ring_suite(),
+                Self::AwsLcRs => suite.as_aws_lc_rs_suite(),
+            }],
+            ..loop {
+                match self {
+                    Self::Ring => {
+                        #[cfg(feature = "ring")]
+                        break rustls::crypto::ring::default_provider();
+                    }
+
+                    Self::AwsLcRs => {
+                        #[cfg(feature = "aws_lc_rs")]
+                        break rustls::crypto::aws_lc_rs::default_provider();
+                    }
+                };
+
+                panic!("support for {self:?} not built in")
+            }
+        })
+    }
 }
 
 async fn server_test_inner(
-    protocol_version: &'static SupportedProtocolVersion,
-    cipher_suite: SupportedCipherSuite,
+    cipher_suite: KtlsCipherSuite,
+    crypto_provider: KtlsCryptoProvider,
     flavor: ServerTestFlavor,
 ) {
     let subject_alt_names = vec!["localhost".to_string()];
@@ -166,18 +180,17 @@ async fn server_test_inner(
     println!("{}", cert.serialize_pem().unwrap());
     println!("{}", cert.serialize_private_key_pem());
 
-    let mut server_config = ServerConfig::builder_with_provider(Arc::new(CryptoProvider {
-        cipher_suites: vec![cipher_suite],
-        ..rustls::crypto::ring::default_provider()
-    }))
-    .with_protocol_versions(&[protocol_version])
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![CertificateDer::from(cert.serialize_der().unwrap())],
-        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()).into(),
-    )
-    .unwrap();
+    let mut server_config =
+        ServerConfig::builder_with_provider(crypto_provider.single_suite(cipher_suite))
+            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(cert.serialize_der().unwrap())],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der())
+                    .into(),
+            )
+            .unwrap();
 
     server_config.enable_secret_extraction = true;
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
@@ -302,46 +315,58 @@ async fn server_test_inner(
     jh.await.unwrap();
 }
 
+#[test_case::test_matrix(
+    [
+        KtlsCryptoProvider::Ring,
+        KtlsCryptoProvider::AwsLcRs,
+    ],
+    [
+        KtlsVersion::TLS12,
+        KtlsVersion::TLS13,
+    ],
+    [
+        KtlsCipherType::AesGcm128,
+        KtlsCipherType::AesGcm256,
+        KtlsCipherType::Chacha20Poly1305,
+    ],
+    [
+        ClientTestFlavor::ShortLastBuffer,
+        ClientTestFlavor::LongLastBuffer,
+    ]
+)]
 #[tokio::test]
-async fn ktls_client_rustls_server_tls_1_3_aes_128_gcm() {
-    client_test(&TLS13, cipher_suite::TLS13_AES_128_GCM_SHA256).await;
-}
+async fn client_tests(
+    crypto_provider: KtlsCryptoProvider,
+    version: KtlsVersion,
+    cipher_type: KtlsCipherType,
+    flavor: ClientTestFlavor,
+) {
+    if matches!(version, KtlsVersion::TLS12) && !cfg!(feature = "tls12") {
+        println!("Skipping...");
+        return;
+    }
 
-#[tokio::test]
-async fn ktls_client_rustls_server_tls_1_3_aes_256_gcm() {
-    client_test(&TLS13, cipher_suite::TLS13_AES_256_GCM_SHA384).await;
-}
+    let cipher_suite = KtlsCipherSuite {
+        version,
+        typ: cipher_type,
+    };
 
-#[tokio::test]
-async fn ktls_client_rustls_server_tls_1_3_chacha20_poly1305() {
-    client_test(&TLS13, cipher_suite::TLS13_CHACHA20_POLY1305_SHA256).await;
-}
+    match &crypto_provider {
+        KtlsCryptoProvider::Ring => {
+            if !cfg!(feature = "ring") {
+                println!("Skipping (ring not built-in)");
+                return;
+            }
+        }
+        KtlsCryptoProvider::AwsLcRs => {
+            if !cfg!(feature = "aws_lc_rs") {
+                println!("Skipping (aws_lc_rs not built-in)");
+                return;
+            }
+        }
+    }
 
-#[tokio::test]
-async fn ktls_client_rustls_server_tls_1_2_ecdhe_aes_128_gcm() {
-    client_test(
-        &TLS12,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn ktls_client_rustls_server_tls_1_2_ecdhe_aes_256_gcm() {
-    client_test(
-        &TLS12,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn ktls_client_rustls_server_tls_1_2_ecdhe_chacha20_poly1305() {
-    client_test(
-        &TLS12,
-        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    )
-    .await;
+    client_test_inner(cipher_suite, crypto_provider, flavor).await
 }
 
 enum ClientTestFlavor {
@@ -349,9 +374,10 @@ enum ClientTestFlavor {
     LongLastBuffer,
 }
 
-async fn client_test(
-    protocol_version: &'static SupportedProtocolVersion,
-    cipher_suite: SupportedCipherSuite,
+async fn client_test_inner(
+    cipher_suite: KtlsCipherSuite,
+    crypto_provider: KtlsCryptoProvider,
+    flavor: ClientTestFlavor,
 ) {
     tracing_subscriber::fmt()
         // .with_env_filter(EnvFilter::new("rustls=trace,debug"))
@@ -360,43 +386,23 @@ async fn client_test(
         .pretty()
         .init();
 
-    client_test_inner(
-        protocol_version,
-        cipher_suite,
-        ClientTestFlavor::ShortLastBuffer,
-    )
-    .await;
-    client_test_inner(
-        protocol_version,
-        cipher_suite,
-        ClientTestFlavor::LongLastBuffer,
-    )
-    .await;
-}
-
-async fn client_test_inner(
-    protocol_version: &'static SupportedProtocolVersion,
-    cipher_suite: SupportedCipherSuite,
-    flavor: ClientTestFlavor,
-) {
     let subject_alt_names = vec!["localhost".to_string()];
 
     let cert = generate_simple_self_signed(subject_alt_names).unwrap();
     println!("{}", cert.serialize_pem().unwrap());
     println!("{}", cert.serialize_private_key_pem());
 
-    let mut server_config = ServerConfig::builder_with_provider(Arc::new(CryptoProvider {
-        cipher_suites: vec![cipher_suite],
-        ..rustls::crypto::ring::default_provider()
-    }))
-    .with_protocol_versions(&[protocol_version])
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![CertificateDer::from(cert.serialize_der().unwrap())],
-        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()).into(),
-    )
-    .unwrap();
+    let mut server_config =
+        ServerConfig::builder_with_provider(crypto_provider.single_suite(cipher_suite))
+            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(cert.serialize_der().unwrap())],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der())
+                    .into(),
+            )
+            .unwrap();
 
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
     // server_config.send_tls13_tickets = 0;

@@ -15,7 +15,10 @@ cov:
 
 # Run all tests
 test *args:
-	RUST_BACKTRACE=1 cargo nextest run {{args}}
+	RUST_BACKTRACE=1 cargo nextest run --all-features {{args}}
 
 check:
 	cargo clippy --all-features --all-targets
+
+check-powerset:
+	cargo hack --feature-powerset check
