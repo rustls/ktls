@@ -15,7 +15,15 @@ cov:
 
 # Run all tests
 test *args:
-	RUST_BACKTRACE=1 cargo nextest run {{args}}
+	#!/bin/bash -eux
+	export RUST_BACKTRACE=1
+	for feature in ring aws_lc_rs; do
+		cargo nextest run --no-default-features --features tls12,$feature {{args}}
+	done
 
 check:
-	cargo clippy --all-features --all-targets
+	cargo clippy --no-default-features --features tls12,ring --all-targets
+	cargo clippy --no-default-features --features tls12,aws_lc_rs --all-targets
+
+check-powerset:
+	cargo hack --feature-powerset --mutually-exclusive-features ring,aws_lc_rs check
