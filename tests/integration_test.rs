@@ -10,12 +10,9 @@ use ktls::{AsyncReadReady, CorkStream};
 use lazy_static::lazy_static;
 use rcgen::generate_simple_self_signed;
 use rustls::{
-    cipher_suite::{
-        TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256,
-        TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    },
     client::Resumption,
+    crypto::{ring::cipher_suite, CryptoProvider},
+    pki_types::CertificateDer,
     version::{TLS12, TLS13},
     ClientConfig, RootCertStore, ServerConfig, SupportedCipherSuite, SupportedProtocolVersion,
 };
@@ -59,12 +56,12 @@ lazy_static! {
 async fn compatible_ciphers() {
     let cc = ktls::CompatibleCiphers::new().await.unwrap();
     for suite in [
-        rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
-        rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
-        rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        cipher_suite::TLS13_AES_128_GCM_SHA256,
+        cipher_suite::TLS13_AES_256_GCM_SHA384,
+        cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
     ] {
         assert!(cc.is_compatible(&suite));
     }
@@ -74,12 +71,12 @@ async fn compatible_ciphers() {
 async fn compatible_ciphers_single_thread() {
     let cc = ktls::CompatibleCiphers::new().await.unwrap();
     for suite in [
-        rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
-        rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
-        rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        cipher_suite::TLS13_AES_128_GCM_SHA256,
+        cipher_suite::TLS13_AES_256_GCM_SHA384,
+        cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
     ] {
         assert!(cc.is_compatible(&suite));
     }
@@ -87,32 +84,44 @@ async fn compatible_ciphers_single_thread() {
 
 #[tokio::test]
 async fn ktls_server_rustls_client_tls_1_3_aes_128_gcm() {
-    server_test(&TLS13, TLS13_AES_128_GCM_SHA256).await;
+    server_test(&TLS13, cipher_suite::TLS13_AES_128_GCM_SHA256).await;
 }
 
 #[tokio::test]
 async fn ktls_server_rustls_client_tls_1_3_aes_256_gcm() {
-    server_test(&TLS13, TLS13_AES_256_GCM_SHA384).await;
+    server_test(&TLS13, cipher_suite::TLS13_AES_256_GCM_SHA384).await;
 }
 
 #[tokio::test]
 async fn ktls_server_rustls_client_tls_1_3_chacha20_poly1305() {
-    server_test(&TLS13, TLS13_CHACHA20_POLY1305_SHA256).await;
+    server_test(&TLS13, cipher_suite::TLS13_CHACHA20_POLY1305_SHA256).await;
 }
 
 #[tokio::test]
 async fn ktls_server_rustls_client_tls_1_2_ecdhe_aes_128_gcm() {
-    server_test(&TLS12, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256).await;
+    server_test(
+        &TLS12,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn ktls_server_rustls_client_tls_1_2_ecdhe_aes_256_gcm() {
-    server_test(&TLS12, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384).await;
+    server_test(
+        &TLS12,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn ktls_server_rustls_client_tls_1_2_ecdhe_chacha20_poly1305() {
-    server_test(&TLS12, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256).await;
+    server_test(
+        &TLS12,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    )
+    .await;
 }
 
 #[derive(Clone, Copy)]
@@ -157,17 +166,18 @@ async fn server_test_inner(
     println!("{}", cert.serialize_pem().unwrap());
     println!("{}", cert.serialize_private_key_pem());
 
-    let mut server_config = ServerConfig::builder()
-        .with_cipher_suites(&[cipher_suite])
-        .with_safe_default_kx_groups()
-        .with_protocol_versions(&[protocol_version])
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![rustls::Certificate(cert.serialize_der().unwrap())],
-            rustls::PrivateKey(cert.serialize_private_key_der()),
-        )
-        .unwrap();
+    let mut server_config = ServerConfig::builder_with_provider(Arc::new(CryptoProvider {
+        cipher_suites: vec![cipher_suite],
+        ..rustls::crypto::ring::default_provider()
+    }))
+    .with_protocol_versions(&[protocol_version])
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from(cert.serialize_der().unwrap())],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()).into(),
+    )
+    .unwrap();
 
     server_config.enable_secret_extraction = true;
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
@@ -235,17 +245,13 @@ async fn server_test_inner(
         .instrument(tracing::info_span!("server")),
     );
 
-    let mut root_certs = RootCertStore::empty();
-    root_certs
-        .add(&rustls::Certificate(cert.serialize_der().unwrap()))
+    let mut root_store = RootCertStore::empty();
+    root_store
+        .add(CertificateDer::from(cert.serialize_der().unwrap()))
         .unwrap();
 
     let client_config = ClientConfig::builder()
-        .with_safe_default_cipher_suites()
-        .with_safe_default_kx_groups()
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(root_certs)
+        .with_root_certificates(root_store)
         .with_no_client_auth();
 
     let tls_connector = TlsConnector::from(Arc::new(client_config));
@@ -298,32 +304,44 @@ async fn server_test_inner(
 
 #[tokio::test]
 async fn ktls_client_rustls_server_tls_1_3_aes_128_gcm() {
-    client_test(&TLS13, TLS13_AES_128_GCM_SHA256).await;
+    client_test(&TLS13, cipher_suite::TLS13_AES_128_GCM_SHA256).await;
 }
 
 #[tokio::test]
 async fn ktls_client_rustls_server_tls_1_3_aes_256_gcm() {
-    client_test(&TLS13, TLS13_AES_256_GCM_SHA384).await;
+    client_test(&TLS13, cipher_suite::TLS13_AES_256_GCM_SHA384).await;
 }
 
 #[tokio::test]
 async fn ktls_client_rustls_server_tls_1_3_chacha20_poly1305() {
-    client_test(&TLS13, TLS13_CHACHA20_POLY1305_SHA256).await;
+    client_test(&TLS13, cipher_suite::TLS13_CHACHA20_POLY1305_SHA256).await;
 }
 
 #[tokio::test]
 async fn ktls_client_rustls_server_tls_1_2_ecdhe_aes_128_gcm() {
-    client_test(&TLS12, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256).await;
+    client_test(
+        &TLS12,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn ktls_client_rustls_server_tls_1_2_ecdhe_aes_256_gcm() {
-    client_test(&TLS12, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384).await;
+    client_test(
+        &TLS12,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn ktls_client_rustls_server_tls_1_2_ecdhe_chacha20_poly1305() {
-    client_test(&TLS12, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256).await;
+    client_test(
+        &TLS12,
+        cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    )
+    .await;
 }
 
 enum ClientTestFlavor {
@@ -367,17 +385,18 @@ async fn client_test_inner(
     println!("{}", cert.serialize_pem().unwrap());
     println!("{}", cert.serialize_private_key_pem());
 
-    let mut server_config = ServerConfig::builder()
-        .with_cipher_suites(&[cipher_suite])
-        .with_safe_default_kx_groups()
-        .with_protocol_versions(&[protocol_version])
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![rustls::Certificate(cert.serialize_der().unwrap())],
-            rustls::PrivateKey(cert.serialize_private_key_der()),
-        )
-        .unwrap();
+    let mut server_config = ServerConfig::builder_with_provider(Arc::new(CryptoProvider {
+        cipher_suites: vec![cipher_suite],
+        ..rustls::crypto::ring::default_provider()
+    }))
+    .with_protocol_versions(&[protocol_version])
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from(cert.serialize_der().unwrap())],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()).into(),
+    )
+    .unwrap();
 
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
     // server_config.send_tls13_tickets = 0;
@@ -426,17 +445,13 @@ async fn client_test_inner(
         .instrument(tracing::info_span!("server")),
     );
 
-    let mut root_certs = RootCertStore::empty();
-    root_certs
-        .add(&rustls::Certificate(cert.serialize_der().unwrap()))
+    let mut root_store = RootCertStore::empty();
+    root_store
+        .add(CertificateDer::from(cert.serialize_der().unwrap()))
         .unwrap();
 
     let mut client_config = ClientConfig::builder()
-        .with_safe_default_cipher_suites()
-        .with_safe_default_kx_groups()
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(root_certs)
+        .with_root_certificates(root_store)
         .with_no_client_auth();
 
     client_config.enable_secret_extraction = true;

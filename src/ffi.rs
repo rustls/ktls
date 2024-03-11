@@ -138,27 +138,84 @@ impl CryptoInfo {
         };
 
         Ok(match secrets {
-            ConnectionTrafficSecrets::Aes128Gcm { key, salt, iv } => {
-                CryptoInfo::AesGcm128(ktls::tls12_crypto_info_aes_gcm_128 {
-                    info: ktls::tls_crypto_info {
-                        version,
-                        cipher_type: ktls::TLS_CIPHER_AES_GCM_128 as _,
-                    },
-                    iv,
-                    key,
-                    salt,
-                    rec_seq: seq.to_be_bytes(),
-                })
+            ConnectionTrafficSecrets::Aes128Gcm { key, iv } => {
+                // see https://github.com/rustls/rustls/issues/1833, between
+                // rustls 0.21 and 0.22, the extract_keys codepath was changed,
+                // so, for TLS 1.2, both GCM-128 and GCM-256 return the
+                // Aes128Gcm variant.
+
+                match key.as_ref().len() {
+                    16 => CryptoInfo::AesGcm128(ktls::tls12_crypto_info_aes_gcm_128 {
+                        info: ktls::tls_crypto_info {
+                            version,
+                            cipher_type: ktls::TLS_CIPHER_AES_GCM_128 as _,
+                        },
+                        iv: iv
+                            .as_ref()
+                            .get(4..)
+                            .expect("AES-GCM-128 iv is 8 bytes")
+                            .try_into()
+                            .expect("AES-GCM-128 iv is 8 bytes"),
+                        key: key
+                            .as_ref()
+                            .try_into()
+                            .expect("AES-GCM-128 key is 16 bytes"),
+                        salt: iv
+                            .as_ref()
+                            .get(..4)
+                            .expect("AES-GCM-128 salt is 4 bytes")
+                            .try_into()
+                            .expect("AES-GCM-128 salt is 4 bytes"),
+                        rec_seq: seq.to_be_bytes(),
+                    }),
+                    32 => CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
+                        info: ktls::tls_crypto_info {
+                            version,
+                            cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
+                        },
+                        iv: iv
+                            .as_ref()
+                            .get(4..)
+                            .expect("AES-GCM-256 iv is 8 bytes")
+                            .try_into()
+                            .expect("AES-GCM-256 iv is 8 bytes"),
+                        key: key
+                            .as_ref()
+                            .try_into()
+                            .expect("AES-GCM-256 key is 32 bytes"),
+                        salt: iv
+                            .as_ref()
+                            .get(..4)
+                            .expect("AES-GCM-256 salt is 4 bytes")
+                            .try_into()
+                            .expect("AES-GCM-256 salt is 4 bytes"),
+                        rec_seq: seq.to_be_bytes(),
+                    }),
+                    _ => unreachable!("GCM key length is not 16 or 32"),
+                }
             }
-            ConnectionTrafficSecrets::Aes256Gcm { key, salt, iv } => {
+            ConnectionTrafficSecrets::Aes256Gcm { key, iv } => {
                 CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
                     info: ktls::tls_crypto_info {
                         version,
                         cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
                     },
-                    iv,
-                    key,
-                    salt,
+                    iv: iv
+                        .as_ref()
+                        .get(4..)
+                        .expect("AES-GCM-256 iv is 8 bytes")
+                        .try_into()
+                        .expect("AES-GCM-256 iv is 8 bytes"),
+                    key: key
+                        .as_ref()
+                        .try_into()
+                        .expect("AES-GCM-256 key is 32 bytes"),
+                    salt: iv
+                        .as_ref()
+                        .get(..4)
+                        .expect("AES-GCM-256 salt is 4 bytes")
+                        .try_into()
+                        .expect("AES-GCM-256 salt is 4 bytes"),
                     rec_seq: seq.to_be_bytes(),
                 })
             }
@@ -168,8 +225,14 @@ impl CryptoInfo {
                         version,
                         cipher_type: ktls::TLS_CIPHER_CHACHA20_POLY1305 as _,
                     },
-                    iv,
-                    key,
+                    iv: iv
+                        .as_ref()
+                        .try_into()
+                        .expect("Chacha20-Poly1305 iv is 12 bytes"),
+                    key: key
+                        .as_ref()
+                        .try_into()
+                        .expect("Chacha20-Poly1305 key is 32 bytes"),
                     salt: ktls::__IncompleteArrayField::new(),
                     rec_seq: seq.to_be_bytes(),
                 })

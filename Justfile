@@ -16,3 +16,6 @@ cov:
 # Run all tests
 test *args:
 	RUST_BACKTRACE=1 cargo nextest run {{args}}
+
+check:
+	cargo clippy --all-features --all-targets

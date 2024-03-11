@@ -1,6 +1,7 @@
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
 use futures::future::try_join_all;
-use rustls::{Connection, ConnectionTrafficSecrets, SupportedCipherSuite};
+use ktls_sys::bindings as sys;
+use rustls::{crypto::ring::cipher_suite, Connection, SupportedCipherSuite};
 use smallvec::SmallVec;
 use std::{
     io,
@@ -90,27 +91,27 @@ impl CompatibleCiphers {
     fn test_ciphers(&mut self, socks: &[TcpStream; Self::CIPHERS_COUNT]) {
         let ciphers = [
             (
-                rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+                cipher_suite::TLS13_AES_128_GCM_SHA256,
                 &mut self.tls13.aes_gcm_128,
             ),
             (
-                rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
+                cipher_suite::TLS13_AES_256_GCM_SHA384,
                 &mut self.tls13.aes_gcm_256,
             ),
             (
-                rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+                cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
                 &mut self.tls13.chacha20_poly1305,
             ),
             (
-                rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
                 &mut self.tls12.aes_gcm_128,
             ),
             (
-                rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
                 &mut self.tls12.aes_gcm_256,
             ),
             (
-                rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
                 &mut self.tls12.chacha20_poly1305,
             ),
         ];
@@ -128,48 +129,99 @@ impl CompatibleCiphers {
     /// Returns true if we're reasonably confident that functions like
     /// [config_ktls_client] and [config_ktls_server] will succeed.
     pub fn is_compatible(&self, suite: &SupportedCipherSuite) -> bool {
-        let (fields, bulk) = match suite {
-            SupportedCipherSuite::Tls12(suite) => (&self.tls12, &suite.common.bulk),
-            SupportedCipherSuite::Tls13(suite) => (&self.tls13, &suite.common.bulk),
-        };
-        match bulk {
-            rustls::BulkAlgorithm::Aes128Gcm => fields.aes_gcm_128,
-            rustls::BulkAlgorithm::Aes256Gcm => fields.aes_gcm_256,
-            rustls::BulkAlgorithm::Chacha20Poly1305 => fields.chacha20_poly1305,
+        if suite == &cipher_suite::TLS13_AES_128_GCM_SHA256 {
+            self.tls13.aes_gcm_128
+        } else if suite == &cipher_suite::TLS13_AES_256_GCM_SHA384 {
+            self.tls13.aes_gcm_256
+        } else if suite == &cipher_suite::TLS13_CHACHA20_POLY1305_SHA256 {
+            self.tls13.chacha20_poly1305
+        } else if suite == &cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
+            self.tls12.aes_gcm_128
+        } else if suite == &cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 {
+            self.tls12.aes_gcm_256
+        } else if suite == &cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 {
+            self.tls12.chacha20_poly1305
+        } else {
+            false
         }
     }
 }
 
 fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
-    let bulk_algo = match cipher_suite {
-        SupportedCipherSuite::Tls12(suite) => &suite.common.bulk,
-        SupportedCipherSuite::Tls13(suite) => &suite.common.bulk,
-    };
-    let zero_secrets = match bulk_algo {
-        rustls::BulkAlgorithm::Aes128Gcm => ConnectionTrafficSecrets::Aes128Gcm {
+    let crypto_info = if cipher_suite == cipher_suite::TLS13_AES_128_GCM_SHA256 {
+        CryptoInfo::AesGcm128(sys::tls12_crypto_info_aes_gcm_128 {
+            info: sys::tls_crypto_info {
+                version: ffi::TLS_1_3_VERSION_NUMBER,
+                cipher_type: sys::TLS_CIPHER_AES_GCM_128 as _,
+            },
+            iv: Default::default(),
             key: Default::default(),
             salt: Default::default(),
+            rec_seq: Default::default(),
+        })
+    } else if cipher_suite == cipher_suite::TLS13_AES_256_GCM_SHA384 {
+        CryptoInfo::AesGcm256(sys::tls12_crypto_info_aes_gcm_256 {
+            info: sys::tls_crypto_info {
+                version: ffi::TLS_1_3_VERSION_NUMBER,
+                cipher_type: sys::TLS_CIPHER_AES_GCM_256 as _,
+            },
             iv: Default::default(),
-        },
-        rustls::BulkAlgorithm::Aes256Gcm => ConnectionTrafficSecrets::Aes256Gcm {
             key: Default::default(),
             salt: Default::default(),
+            rec_seq: Default::default(),
+        })
+    } else if cipher_suite == cipher_suite::TLS13_CHACHA20_POLY1305_SHA256 {
+        CryptoInfo::Chacha20Poly1305(sys::tls12_crypto_info_chacha20_poly1305 {
+            info: sys::tls_crypto_info {
+                version: ffi::TLS_1_3_VERSION_NUMBER,
+                cipher_type: sys::TLS_CIPHER_CHACHA20_POLY1305 as _,
+            },
             iv: Default::default(),
-        },
-        rustls::BulkAlgorithm::Chacha20Poly1305 => ConnectionTrafficSecrets::Chacha20Poly1305 {
             key: Default::default(),
+            salt: Default::default(),
+            rec_seq: Default::default(),
+        })
+    } else if cipher_suite == cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
+        CryptoInfo::AesGcm128(sys::tls12_crypto_info_aes_gcm_128 {
+            info: sys::tls_crypto_info {
+                version: ffi::TLS_1_2_VERSION_NUMBER,
+                cipher_type: sys::TLS_CIPHER_AES_GCM_128 as _,
+            },
             iv: Default::default(),
-        },
+            key: Default::default(),
+            salt: Default::default(),
+            rec_seq: Default::default(),
+        })
+    } else if cipher_suite == cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 {
+        CryptoInfo::AesGcm256(sys::tls12_crypto_info_aes_gcm_256 {
+            info: sys::tls_crypto_info {
+                version: ffi::TLS_1_2_VERSION_NUMBER,
+                cipher_type: sys::TLS_CIPHER_AES_GCM_256 as _,
+            },
+            iv: Default::default(),
+            key: Default::default(),
+            salt: Default::default(),
+            rec_seq: Default::default(),
+        })
+    } else if cipher_suite == cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 {
+        CryptoInfo::Chacha20Poly1305(sys::tls12_crypto_info_chacha20_poly1305 {
+            info: sys::tls_crypto_info {
+                version: ffi::TLS_1_2_VERSION_NUMBER,
+                cipher_type: sys::TLS_CIPHER_CHACHA20_POLY1305 as _,
+            },
+            iv: Default::default(),
+            key: Default::default(),
+            salt: Default::default(),
+            rec_seq: Default::default(),
+        })
+    } else {
+        panic!("unsupported cipher suite")
     };
-
-    let seq_secrets = (0, zero_secrets);
-    let info = CryptoInfo::from_rustls(cipher_suite, seq_secrets).unwrap();
-
     let fd = sock.as_raw_fd();
 
     setup_ulp(fd).map_err(Error::UlpError)?;
 
-    setup_tls_info(fd, ffi::Direction::Tx, info)?;
+    setup_tls_info(fd, ffi::Direction::Tx, crypto_info)?;
 
     Ok(())
 }
@@ -285,7 +337,7 @@ fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
         }
     };
 
-    let secrets = match conn.extract_secrets() {
+    let secrets = match conn.dangerous_extract_secrets() {
         Ok(secrets) => secrets,
         Err(err) => return Err(Error::ExportSecrets(err)),
     };
