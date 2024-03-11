@@ -139,10 +139,10 @@ impl CryptoInfo {
 
         Ok(match secrets {
             ConnectionTrafficSecrets::Aes128Gcm { key, iv } => {
-                // see https://github.com/rustls/rustls/issues/1833,
-                // between rustls 0.21 and 0.22, the extract_keys codepath
-                // was changed, so it always returns AesGcm128, even if
-                // the cipher suite is Aes256Gcm.
+                // see https://github.com/rustls/rustls/issues/1833, between
+                // rustls 0.21 and 0.22, the extract_keys codepath was changed,
+                // so, for TLS 1.2, both GCM-128 and GCM-256 return the
+                // Aes128Gcm variant.
 
                 match key.as_ref().len() {
                     16 => CryptoInfo::AesGcm128(ktls::tls12_crypto_info_aes_gcm_128 {
@@ -194,8 +194,30 @@ impl CryptoInfo {
                     _ => unreachable!("GCM key length is not 16 or 32"),
                 }
             }
-            ConnectionTrafficSecrets::Aes256Gcm { .. } => {
-                unreachable!("a bug in rustls 0.22 means this codepath is dead. when we can upgrade to 0.23, we should fix this. see https://github.com/rustls/rustls/issues/1833")
+            ConnectionTrafficSecrets::Aes256Gcm { key, iv } => {
+                CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
+                    info: ktls::tls_crypto_info {
+                        version,
+                        cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
+                    },
+                    iv: iv
+                        .as_ref()
+                        .get(4..)
+                        .expect("AES-GCM-256 iv is 8 bytes")
+                        .try_into()
+                        .expect("AES-GCM-256 iv is 8 bytes"),
+                    key: key
+                        .as_ref()
+                        .try_into()
+                        .expect("AES-GCM-256 key is 32 bytes"),
+                    salt: iv
+                        .as_ref()
+                        .get(..4)
+                        .expect("AES-GCM-256 salt is 4 bytes")
+                        .try_into()
+                        .expect("AES-GCM-256 salt is 4 bytes"),
+                    rec_seq: seq.to_be_bytes(),
+                })
             }
             ConnectionTrafficSecrets::Chacha20Poly1305 { key, iv } => {
                 CryptoInfo::Chacha20Poly1305(ktls::tls12_crypto_info_chacha20_poly1305 {
