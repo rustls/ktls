@@ -30,7 +30,8 @@ jobs:
         run: |
           cd ${{ github.workspace }}
           cargo clippy
-          just ci-test
+          # show backtraces
+          RUST_BACKTRACE=1 just ci-test
       - name: Upload coverage information
         run: |
           curl -Os https://uploader.codecov.io/latest/linux/codecov 
