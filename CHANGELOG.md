@@ -3,16 +3,13 @@
 ## [5.0.0](https://github.com/hapsoc/ktls/compare/v4.0.0...v5.0.0) - 2024-03-11
 
 ### Added
-- More dependency upgrades
-- [**breaking**] Upgrade dependencies
+- [**breaking**] Upgrade to rustls 0.22.2
+- [**breaking**] Upgrade to tokio-rustls 0.25.0
 
 ### Other
-- TLS 1.3 codepath still does the right thing in rustls 0.22.2
-- backtraces in CI
-- Fix integration test compile errors
-- rustls 0.22 support
-- Get rid of constrandom
-- Add flake to have the toolchain anywhere
+- Get rid of constrandom (it caused 'wrong type' compile error on Rust stable)
+- Print backtraces in CI
+- Add nix flake to have the toolchain everywhere
 - Re-add Cargo.lock as per updated best practices
 - Disable incremental compilation
 - Remove token
