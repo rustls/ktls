@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-use const_random::const_random;
 use ktls::{AsyncReadReady, CorkStream};
+use lazy_static::lazy_static;
 use rcgen::generate_simple_self_signed;
 use rustls::{
     cipher_suite::{
@@ -27,8 +27,33 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
 
-const CLIENT_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
-const SERVER_PAYLOAD: &[u8] = &const_random!([u8; 262144]);
+const RANDOM_SEED: u128 = 19873239487139847918274_u128;
+
+struct Payloads {
+    client: Vec<u8>,
+    server: Vec<u8>,
+}
+
+impl Default for Payloads {
+    fn default() -> Self {
+        let mut prng = oorandom::Rand64::new(RANDOM_SEED);
+        let payload_len = 262_144;
+        let mut gen_payload = || {
+            (0..payload_len)
+                .map(|_| (prng.rand_u64() % 256) as u8)
+                .collect()
+        };
+
+        Self {
+            client: gen_payload(),
+            server: gen_payload(),
+        }
+    }
+}
+
+lazy_static! {
+    static ref PAYLOADS: Payloads = Payloads::default();
+}
 
 #[tokio::test]
 async fn compatible_ciphers() {
@@ -169,21 +194,21 @@ async fn server_test_inner(
             debug!("Configured kTLS");
 
             debug!("Server reading data (1/5)");
-            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            let mut buf = vec![0u8; PAYLOADS.client.len()];
             stream.read_exact(&mut buf).await.unwrap();
-            assert_eq!(buf, CLIENT_PAYLOAD);
+            assert_eq!(buf, PAYLOADS.client);
 
             debug!("Server writing data (2/5)");
-            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            stream.write_all(&PAYLOADS.server).await.unwrap();
             stream.flush().await.unwrap();
 
             debug!("Server reading data (3/5)");
-            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            let mut buf = vec![0u8; PAYLOADS.client.len()];
             stream.read_exact(&mut buf).await.unwrap();
-            assert_eq!(buf, CLIENT_PAYLOAD);
+            assert_eq!(buf, PAYLOADS.client);
 
             debug!("Server writing data (4/5)");
-            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            stream.write_all(&PAYLOADS.server).await.unwrap();
             stream.flush().await.unwrap();
 
             match flavor {
@@ -199,7 +224,7 @@ async fn server_test_inner(
                     stream.shutdown().await.unwrap();
 
                     debug!("Server trying to write after closing");
-                    stream.write_all(SERVER_PAYLOAD).await.unwrap_err();
+                    stream.write_all(&PAYLOADS.server).await.unwrap_err();
                 }
             }
 
@@ -232,24 +257,24 @@ async fn server_test_inner(
         .unwrap();
 
     debug!("Client writing data (1/5)");
-    stream.write_all(CLIENT_PAYLOAD).await.unwrap();
+    stream.write_all(&PAYLOADS.client).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     debug!("Client reading data (2/5)");
-    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; PAYLOADS.server.len()];
     stream.read_exact(&mut buf).await.unwrap();
-    assert_eq!(buf, SERVER_PAYLOAD);
+    assert_eq!(buf, PAYLOADS.server);
 
     debug!("Client writing data (3/5)");
-    stream.write_all(CLIENT_PAYLOAD).await.unwrap();
+    stream.write_all(&PAYLOADS.client).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     debug!("Client reading data (4/5)");
-    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; PAYLOADS.server.len()];
     stream.read_exact(&mut buf).await.unwrap();
-    assert_eq!(buf, SERVER_PAYLOAD);
+    assert_eq!(buf, PAYLOADS.server);
 
     match flavor {
         ServerTestFlavor::ClientCloses => {
@@ -257,7 +282,7 @@ async fn server_test_inner(
             stream.shutdown().await.unwrap();
 
             debug!("Client trying to write after closing");
-            stream.write_all(CLIENT_PAYLOAD).await.unwrap_err();
+            stream.write_all(&PAYLOADS.client).await.unwrap_err();
         }
         ServerTestFlavor::ServerCloses => {
             debug!("Client reading from closed session (5/5)");
@@ -370,17 +395,17 @@ async fn client_test_inner(
             debug!("Completed TLS handshake");
 
             debug!("Server reading data (1/5)");
-            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            let mut buf = vec![0u8; PAYLOADS.client.len()];
             stream.read_exact(&mut buf).await.unwrap();
-            assert_eq!(buf, CLIENT_PAYLOAD);
+            assert_eq!(buf, PAYLOADS.client);
 
             debug!("Server writing data (2/5)");
-            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            stream.write_all(&PAYLOADS.server).await.unwrap();
 
             debug!("Server reading data (3/5)");
-            let mut buf = vec![0u8; CLIENT_PAYLOAD.len()];
+            let mut buf = vec![0u8; PAYLOADS.client.len()];
             stream.read_exact(&mut buf).await.unwrap();
-            assert_eq!(buf, CLIENT_PAYLOAD);
+            assert_eq!(buf, PAYLOADS.client);
 
             for _i in 0..3 {
                 debug!("Making the client wait (to make busywaits REALLY obvious)");
@@ -388,13 +413,13 @@ async fn client_test_inner(
             }
 
             debug!("Server writing data (4/5)");
-            stream.write_all(SERVER_PAYLOAD).await.unwrap();
+            stream.write_all(&PAYLOADS.server).await.unwrap();
 
             debug!("Server sending close notify (5/5)");
             stream.shutdown().await.unwrap();
 
             debug!("Server trying to write after close notify");
-            stream.write_all(SERVER_PAYLOAD).await.unwrap_err();
+            stream.write_all(&PAYLOADS.server).await.unwrap_err();
 
             debug!("Server is happy with the exchange");
         }
@@ -431,26 +456,26 @@ async fn client_test_inner(
     let mut stream = SpyStream(stream, "client");
 
     debug!("Client writing data (1/5)");
-    stream.write_all(CLIENT_PAYLOAD).await.unwrap();
+    stream.write_all(&PAYLOADS.client).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     debug!("Client reading data (2/5)");
-    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; PAYLOADS.server.len()];
     stream.read_exact(&mut buf).await.unwrap();
-    assert_eq!(buf, SERVER_PAYLOAD);
+    assert_eq!(buf, PAYLOADS.server);
 
     debug!("Client writing data (3/5)");
-    stream.write_all(CLIENT_PAYLOAD).await.unwrap();
+    stream.write_all(&PAYLOADS.client).await.unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     debug!("Client reading data (4/5)");
-    let mut buf = vec![0u8; SERVER_PAYLOAD.len()];
+    let mut buf = vec![0u8; PAYLOADS.server.len()];
     stream.read_exact(&mut buf).await.unwrap();
-    assert_eq!(buf, SERVER_PAYLOAD);
+    assert_eq!(buf, PAYLOADS.server);
 
     let buf = match flavor {
         ClientTestFlavor::ShortLastBuffer => &mut buf[..1],
