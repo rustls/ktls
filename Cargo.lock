@@ -393,9 +393,9 @@ dependencies = [
 
 [[package]]
 name = "ktls-sys"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13a44aeddd3581dea0fc96dc056585b4e4b25bcce730c4b03f614ff6c97fc3c6"
+checksum = "095b1fc8d841c3df8c3f2db78b7425cb2ec424568a282cb589a880b99d256e84"
 
 [[package]]
 name = "lazy_static"
@@ -422,7 +422,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c2a198fb6b0eada2a8df47933734e6d35d350665a33a3593d7164fa52c75c19"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.4",
 ]
 
 [[package]]
