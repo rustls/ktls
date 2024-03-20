@@ -1,5 +1,5 @@
 use ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
-use futures::future::try_join_all;
+use futures_util::future::try_join_all;
 use ktls_sys::bindings as sys;
 use rustls::{Connection, SupportedCipherSuite, SupportedProtocolVersion};
 

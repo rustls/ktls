@@ -82,7 +82,7 @@ where
                     {
                         let mut rest = ReadBuf::new(&mut header_buf[*offset..]);
                         tracing::trace!("reading header: doing i/o");
-                        futures::ready!(io.as_mut().poll_read(cx, &mut rest)?);
+                        futures_util::ready!(io.as_mut().poll_read(cx, &mut rest)?);
                         tracing::trace!("reading header: io was ready");
                         *offset += rest.filled().len();
                         if rest.filled().is_empty() {
@@ -135,7 +135,7 @@ where
 
                     let just_read = {
                         let mut rest = buf.take(rest);
-                        futures::ready!(io.as_mut().poll_read(cx, &mut rest)?);
+                        futures_util::ready!(io.as_mut().poll_read(cx, &mut rest)?);
 
                         tracing::trace!("read {} bytes off of payload", rest.filled().len());
                         *offset += rest.filled().len();
