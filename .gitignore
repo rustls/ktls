@@ -1,5 +1,4 @@
 /target
 *coverage*
 .direnv
-/Cargo.lock
 .DS_Store
