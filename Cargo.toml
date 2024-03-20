@@ -22,9 +22,9 @@ memoffset = "0.9.0"
 pin-project-lite = "0.2.13"
 tokio = { version = "1.36.0", features = ["net", "macros", "io-util"] }
 ktls-sys = "1.0.1"
-ktls-recvmsg = { version = "0.1.3" }
 num_enum = "0.7.2"
 futures-util = "0.3.30"
+nix = { version = "0.28.0", features = ["socket", "uio", "net"] }
 
 [dev-dependencies]
 lazy_static = "1.4.0"

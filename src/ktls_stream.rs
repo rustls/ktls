@@ -1,4 +1,7 @@
-use ktls_recvmsg::{recvmsg, ControlMessageOwned, Errno, MsgFlags, SockaddrIn};
+use nix::{
+    errno::Errno,
+    sys::socket::{recvmsg, ControlMessageOwned, MsgFlags, SockaddrIn, TlsGetRecordType},
+};
 use num_enum::FromPrimitive;
 use std::{
     io::{self, IoSliceMut},
@@ -67,17 +70,6 @@ enum TlsAlertLevel {
 #[repr(u8)]
 enum TlsAlertDescription {
     CloseNotify = 0,
-    #[num_enum(catch_all)]
-    Other(u8),
-}
-
-#[derive(Debug, PartialEq, Clone, Copy, num_enum::FromPrimitive)]
-#[repr(u8)]
-enum TlsRecordType {
-    ChangeCipherSpec = 20,
-    Alert = 21,
-    Handshake = 22,
-    ApplicationData = 23,
     #[num_enum(catch_all)]
     Other(u8),
 }
@@ -165,11 +157,11 @@ where
                     _ => panic!("unexpected cmsg type: {cmsg:#?}"),
                 };
 
-                match TlsRecordType::from_primitive(record_type) {
-                    TlsRecordType::ChangeCipherSpec => {
+                match record_type {
+                    TlsGetRecordType::ChangeCipherSpec => {
                         panic!("change_cipher_spec isn't supported by the ktls crate")
                     }
-                    TlsRecordType::Alert => {
+                    TlsGetRecordType::Alert => {
                         // the alert level and description are in iovs
                         let iov = r.iovs().next().expect("expected data in iovs");
 
@@ -229,7 +221,7 @@ where
                         }
                         return task::Poll::Ready(Ok(()));
                     }
-                    TlsRecordType::Handshake => {
+                    TlsGetRecordType::Handshake => {
                         // TODO: this is where we receive TLS 1.3 resumption tickets,
                         // should those be stored anywhere? I'm not even sure what
                         // format they have at this point
@@ -237,12 +229,15 @@ where
                             "ignoring handshake message (probably a resumption ticket)"
                         );
                     }
-                    TlsRecordType::ApplicationData => {
+                    TlsGetRecordType::ApplicationData => {
                         unreachable!("received TLS application in recvmsg, this is supposed to happen in the poll_read codepath")
                     }
-                    TlsRecordType::Other(t) => {
+                    TlsGetRecordType::Unknown(t) => {
                         // just ignore the record?
                         tracing::trace!("received record_type {t:#?}");
+                    }
+                    _ => {
+                        tracing::trace!("received unsupported record type");
                     }
                 };
 
