@@ -61,23 +61,6 @@ impl From<Direction> for libc::c_int {
     }
 }
 
-trait CryptoInfoRaw: Sized {}
-
-macro_rules! impl_crypto_info_raw {
-    ($($type:ty)*) => {
-		$(impl CryptoInfoRaw for $type {})*
-    };
-}
-
-impl_crypto_info_raw!(
-    ktls::tls12_crypto_info_aes_gcm_128
-    ktls::tls12_crypto_info_aes_gcm_256
-    ktls::tls12_crypto_info_aes_ccm_128
-    ktls::tls12_crypto_info_chacha20_poly1305
-    ktls::tls12_crypto_info_sm4_gcm
-    ktls::tls12_crypto_info_sm4_ccm
-);
-
 #[allow(dead_code)]
 pub enum CryptoInfo {
     AesGcm128(ktls::tls12_crypto_info_aes_gcm_128),

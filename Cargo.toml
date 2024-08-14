@@ -3,8 +3,9 @@ name = "ktls"
 version = "5.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/hapsoc/ktls"
+repository = "https://github.com/bearcove/ktls"
 documentation = "https://docs.rs/ktls"
+authors = ["Amos Wenger <amos@bearcove.net>"]
 readme = "README.md"
 description = """
 Configures kTLS for tokio-rustls client and server connections.
@@ -14,8 +15,7 @@ Configures kTLS for tokio-rustls client and server connections.
 libc = { version = "0.2.153", features = ["const-extern-fn"] }
 thiserror = "1.0.58"
 tracing = "0.1.40"
-# main branch
-tokio-rustls = { git = "https://github.com/rustls/tokio-rustls", rev = "caf4e8267f0e708a2bfc561dec98a842dc960ba6", default-features = false }
+tokio-rustls = { default-features = false, version = "0.26.0" }
 rustls = { version = "0.23.5", default-features = false }
 smallvec = "1.13.1"
 memoffset = "0.9.0"
