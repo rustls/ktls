@@ -1,5 +1,29 @@
 # Changelog
 
+## [6.0.0](https://github.com/bearcove/ktls/compare/v5.0.0...v6.0.0) - 2024-08-14
+
+### Added
+- [**breaking**] Upgrade other dependencies
+- [**breaking**] Upgrade to tokio-rustls 0.26.0, remove unused trait
+- Migrate from ktls-recvmsg to nix 0.28
+- Switch from futures to futures_util
+- Add aws-lc-rs as an alias for aws_lc_rs feature
+- Upgrade dependencies
+
+### Fixed
+- Upgrade to Rust 1.80.1
+- Remove nix stuff
+
+### Other
+- Bump rustls from 0.23.2 to 0.23.5
+- Remove Cargo.lock from .gitignore
+- Upgrade ktls-sys
+- Ignore .DS_Store files
+- Bump tokio-rustls
+- make aws_lc_rs and ring mutually exclusive for ktls
+- More aws_lc_rs support
+- Start adding support for aws_lc_rs
+
 ## [5.0.0](https://github.com/hapsoc/ktls/compare/v4.0.0...v5.0.0) - 2024-03-11
 
 ### Added
