@@ -15,6 +15,9 @@ cov:
 	#!/bin/bash -eux
 	cargo llvm-cov nextest --hide-instantiations --html --output-dir coverage
 
+t *args:
+    just test {{args}}
+
 # Run all tests
 test *args:
 	#!/bin/bash -eux
@@ -22,6 +25,9 @@ test *args:
 	for feature in ring aws_lc_rs; do
 		cargo nextest run --no-default-features --features tls12,$feature {{args}}
 	done
+
+c *args:
+    just check {{args}}
 
 check:
 	cargo clippy --no-default-features --features tls12,ring --all-targets

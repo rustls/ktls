@@ -148,7 +148,7 @@ where
                     }
                 };
                 let cmsg = r
-                    .cmsgs()
+                    .cmsgs()?
                     .next()
                     .expect("we should've received exactly one control message");
 

@@ -10,8 +10,8 @@ use ktls::{AsyncReadReady, CorkStream, KtlsCipherSuite, KtlsCipherType, KtlsVers
 use lazy_static::lazy_static;
 use rcgen::generate_simple_self_signed;
 use rustls::{
-    client::Resumption, crypto::CryptoProvider, pki_types::CertificateDer, ClientConfig,
-    RootCertStore, ServerConfig, SupportedCipherSuite,
+    client::Resumption, crypto::CryptoProvider, ClientConfig, RootCertStore, ServerConfig,
+    SupportedCipherSuite,
 };
 
 #[cfg(feature = "aws_lc_rs")]
@@ -131,9 +131,7 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
 
     let subject_alt_names = vec!["localhost".to_string()];
 
-    let cert = generate_simple_self_signed(subject_alt_names).unwrap();
-    println!("{}", cert.serialize_pem().unwrap());
-    println!("{}", cert.serialize_private_key_pem());
+    let ckey = generate_simple_self_signed(subject_alt_names).unwrap();
 
     let mut server_config =
         ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
@@ -141,9 +139,8 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(cert.serialize_der().unwrap())],
-                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der())
-                    .into(),
+                vec![ckey.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(ckey.key_pair.serialize_der()).into(),
             )
             .unwrap();
 
@@ -214,9 +211,7 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
     );
 
     let mut root_store = RootCertStore::empty();
-    root_store
-        .add(CertificateDer::from(cert.serialize_der().unwrap()))
-        .unwrap();
+    root_store.add(ckey.cert.der().clone()).unwrap();
 
     let client_config = ClientConfig::builder()
         .with_root_certificates(root_store)
@@ -315,9 +310,7 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
 
     let subject_alt_names = vec!["localhost".to_string()];
 
-    let cert = generate_simple_self_signed(subject_alt_names).unwrap();
-    println!("{}", cert.serialize_pem().unwrap());
-    println!("{}", cert.serialize_private_key_pem());
+    let ckey = generate_simple_self_signed(subject_alt_names).unwrap();
 
     let mut server_config =
         ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
@@ -325,9 +318,8 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(cert.serialize_der().unwrap())],
-                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.serialize_private_key_der())
-                    .into(),
+                vec![ckey.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(ckey.key_pair.serialize_der()).into(),
             )
             .unwrap();
 
@@ -379,9 +371,7 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
     );
 
     let mut root_store = RootCertStore::empty();
-    root_store
-        .add(CertificateDer::from(cert.serialize_der().unwrap()))
-        .unwrap();
+    root_store.add(ckey.cert.der().clone()).unwrap();
 
     let mut client_config = ClientConfig::builder()
         .with_root_certificates(root_store)
