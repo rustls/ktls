@@ -1,3 +1,6 @@
 [workspace]
-members = ["ktls"]
+members = [
+	"ktls",
+	"ktls-sys"
+]
 resolver = "2"
