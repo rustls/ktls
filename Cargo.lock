@@ -323,7 +323,7 @@ name = "ktls"
 version = "6.0.0"
 dependencies = [
  "futures-util",
- "ktls-sys",
+ "ktls-sys 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static",
  "libc",
  "memoffset",
@@ -342,6 +342,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "ktls-sys"
+version = "1.0.1"
 
 [[package]]
 name = "ktls-sys"
