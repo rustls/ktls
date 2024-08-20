@@ -1,0 +1,15 @@
+[package]
+name = "ktls-sys"
+version = "1.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rustls/ktls-sys"
+documentation = "https://docs.rs/ktls-sys"
+authors = ["Amos Wenger <amos@bearcove.net>"]
+readme = "README.md"
+description = """
+FFI bindings for `linux/tls.h`
+"""
+rust-version = "1.75"
+
+[dependencies]
