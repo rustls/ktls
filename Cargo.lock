@@ -320,10 +320,10 @@ dependencies = [
 
 [[package]]
 name = "ktls"
-version = "6.0.0"
+version = "6.0.1"
 dependencies = [
  "futures-util",
- "ktls-sys 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ktls-sys 1.0.1",
  "lazy_static",
  "libc",
  "memoffset",
@@ -346,12 +346,12 @@ dependencies = [
 [[package]]
 name = "ktls-sys"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "095b1fc8d841c3df8c3f2db78b7425cb2ec424568a282cb589a880b99d256e84"
 
 [[package]]
 name = "ktls-sys"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "095b1fc8d841c3df8c3f2db78b7425cb2ec424568a282cb589a880b99d256e84"
+version = "1.0.2"
 
 [[package]]
 name = "lazy_static"
