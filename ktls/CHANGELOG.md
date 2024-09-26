@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.0.1](https://github.com/rustls/ktls/compare/ktls-v6.0.0...ktls-v6.0.1) - 2024-09-26
+
+### Other
+
+- Standardize READMEs a little
+- Turn ktls into a workspace
+
 ## [6.0.0](https://github.com/bearcove/ktls/compare/v5.0.0...v6.0.0) - 2024-08-14
 
 ### Added
