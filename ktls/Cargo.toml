@@ -21,7 +21,7 @@ rustls = { version = "0.23.12", default-features = false }
 smallvec = "1.13.2"
 memoffset = "0.9.1"
 pin-project-lite = "0.2.14"
-tokio = { version = "1.39.2", features = ["net", "macros", "io-util"] }
+tokio = { version = "1.43.1", features = ["net", "macros", "io-util"] }
 ktls-sys = "1.0.1"
 num_enum = "0.7.3"
 futures-util = "0.3.30"
@@ -34,7 +34,7 @@ rcgen = "0.13.1"
 socket2 = "0.5.7"
 test-case = "3.3.1"
 thiserror = "1.0.63"
-tokio = { version = "1.39.2", features = ["full"] }
+tokio = { version = "1.43.1", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [features]
