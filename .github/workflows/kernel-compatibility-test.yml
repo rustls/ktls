@@ -1,0 +1,187 @@
+# Credits: https://github.com/tokio-rs/io-uring/blob/master/.github/workflows/kernel-version-test.yml
+#
+# Tests kTLS functionality across multiple kernel versions.
+# Default matrix: 6.12, 6.6, 6.1, 5.15, 5.10, 5.4
+# Manual trigger supports custom space-separated version list.
+
+name: Kernel Compatibility Test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      kernel_versions:
+        description: "Space-separated list of Linux kernel versions to test (e.g., '6.12 6.6 6.1.148 5.15.189 5.10.240 5.4.296')"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          if [ -n "${GITHUB_EVENT_INPUTS_KERNEL_VERSIONS}" ]; then
+            # Manual trigger with custom versions
+            versions="${GITHUB_EVENT_INPUTS_KERNEL_VERSIONS}"
+            echo "Using manual input versions: $versions"
+          else
+            # Default versions for push events
+            versions="6.12 6.6 6.1.148 5.15.189 5.10.240 5.4.296"
+            echo "Using default versions: $versions"
+          fi
+
+          # Convert space-separated list to JSON array
+          json_array=$(echo "$versions" | tr ' ' '\n' | jq -R . | jq -s -c .)
+          echo "matrix={\"kernel_version\":$json_array}" >> $GITHUB_OUTPUT
+          echo "Generated matrix: {\"kernel_version\":$json_array}"
+        env:
+          GITHUB_EVENT_INPUTS_KERNEL_VERSIONS: ${{ github.event.inputs.kernel_versions }}
+
+  build:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{fromJson(needs.prepare-matrix.outputs.matrix)}}
+      fail-fast: false
+    env:
+      KERNEL_VERSION: ${{ matrix.kernel_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison flex libelf-dev \
+            qemu-system-x86 busybox-static cpio xz-utils wget e2fsprogs \
+            musl-tools
+
+      - name: Install Rust 1.77.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.0
+          targets: x86_64-unknown-linux-musl
+
+      - name: Generate the test binary
+        run: |
+          cargo build --package ktls-test --example client --release --target x86_64-unknown-linux-musl
+
+      - name: Cache Linux source
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: linux-${{ env.KERNEL_VERSION }}
+          key: kernel-${{ env.KERNEL_VERSION }}
+
+      - name: Download & build Linux kernel
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        run: |
+          MAJOR=${KERNEL_VERSION%%.*}
+          wget https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz
+          tar xf linux-${KERNEL_VERSION}.tar.xz
+          cd linux-${KERNEL_VERSION}
+
+          # Generate the default config
+          make defconfig
+
+          # Enable essentials as built-ins
+          scripts/config --enable CONFIG_DEVTMPFS
+          scripts/config --enable CONFIG_DEVTMPFS_MOUNT
+
+          # Enable virtio drivers
+          scripts/config --enable CONFIG_VIRTIO
+          scripts/config --enable CONFIG_VIRTIO_PCI
+          scripts/config --enable CONFIG_VIRTIO_BLK
+
+          # Enable kTLS support
+          scripts/config --enable CONFIG_TLS
+          scripts/config --enable CONFIG_TLS_DEVICE
+
+          # Generate the updated config
+          make olddefconfig
+
+          make -j$(nproc)
+
+      - name: Prepare initramfs + tests binaries
+        run: |
+          rm -rf initramfs && mkdir -p initramfs/{bin,sbin,proc,sys,tmp}
+
+          # Copy the test binary
+          cp target/x86_64-unknown-linux-musl/release/examples/client initramfs/bin/ktls-test
+
+          # Add necessary binaries from busybox
+          cp /usr/bin/busybox initramfs/bin/
+          for cmd in sh mount ip ifconfig cat; do ln -sf busybox initramfs/bin/$cmd; done
+          ln -sf ../bin/busybox initramfs/sbin/poweroff
+
+          # Generate init script
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          set -e
+
+          # Activating the loopback interface (it's required for some network tests)
+          ip link set lo up
+
+          mkdir -p /dev
+
+          # Enable necessary devices
+          # https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
+          mknod /dev/port c 1 4
+          mknod /dev/null c 1 3
+          mknod /dev/zero c 1 5
+          mknod /dev/tty c 5 0
+
+          mkdir -p /tmp && mount -t tmpfs -o mode=1777 tmpfs /tmp
+
+          # Bring up ext4 test volume at /mnt
+          mount -t devtmpfs devtmpfs /dev
+
+          exit_code=0
+
+          # Run the test binary
+          RUST_BACKTRACE=1 /bin/ktls-test || exit_code=1
+
+          # If the test binary exited with a non-zero code, write it to /dev/port.
+          # This lets QEMU exit with non-zero exit-code, triggering a CI error.
+          [ $exit_code -eq 0 ] || printf '\x01' \
+            | dd of=/dev/port bs=1 seek=244 count=1 2>/dev/null
+
+          /sbin/poweroff -f
+
+          EOF
+
+          chmod +x initramfs/init
+
+          # Pack into a CPIO archive
+          (cd initramfs && find . -print0 \
+            | cpio --null -ov --format=newc | gzip -9 > ../initramfs.cpio.gz)
+
+      - name: Run tests in QEMU
+        run: |
+          qemu-system-x86_64 \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -kernel linux-${KERNEL_VERSION}/arch/x86/boot/bzImage \
+            -initrd initramfs.cpio.gz \
+            -netdev user,id=net0 \
+            -device e1000,netdev=net0 \
+            -append "console=ttyS0 rootfstype=ramfs panic=1" \
+            -nographic -no-reboot -m 1024 -action panic=exit-failure
+
+          if [ $? -ne 0 ]; then
+            echo "tests failed (QEMU exited abnormally)"
+            exit 1
+          else
+            echo "all tests passed"
+          fi

@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+env:
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test (Rust ${{matrix.toolchain}}, target ${{matrix.target}})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["nightly", "beta", "stable"]
+        target: ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{matrix.toolchain}}
+          components: llvm-tools, clippy, rust-src
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov,cargo-nextest
+      - name: Enable type layout randomization
+        if: matrix.toolchain == 'nightly'
+        run: echo RUSTFLAGS=${RUSTFLAGS}\ -Zrandomize-layout >> $GITHUB_ENV
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+        if: endsWith(matrix.target, 'musl')
+      - run: rustup target add ${{matrix.target}}
+      - run: just example client --target ${{matrix.target}}
+      - run: just build --tests --release --target ${{matrix.target}}
+      - run: just ci-test --target ${{matrix.target}}
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just build --package ktls
+      - run: just build --package ktls-sys
+      - run: just build --package ktls-test
+      - run: just build --package ktls-util
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTDOCFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/install@cargo-docs-rs
+      - run: cargo docs-rs --package ktls
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.0
+          components: clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just clippy
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.0
+          components: llvm-tools, clippy, rust-src
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov,cargo-nextest
+      - run: just example client
+      - run: just build --tests --release
+      - run: just ci-test
+      - name: Upload coverage information
+        run: |
+          curl -Os https://uploader.codecov.io/latest/linux/codecov
+          chmod +x codecov
+          ./codecov

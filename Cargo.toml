@@ -1,3 +1,14 @@
 [workspace]
-members = ["ktls", "ktls-sys"]
+members = ["ktls", "ktls-sys", "ktls-test", "ktls-util"]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.77.0"
+# === Publication info ===
+authors = ["Amos Wenger <amos@bearcove.net>"]
+categories = ["network-programming"]
+keywords = ["ktls", "linux", "tls", "rustls"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/rustls/ktls"

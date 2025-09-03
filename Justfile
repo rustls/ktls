@@ -4,35 +4,45 @@ _default:
 	just --list
 
 # Run all tests with nextest and cargo-llvm-cov
-ci-test:
+ci-test *args:
 	#!/bin/bash -eux
-	for backend in ring aws_lc_rs; do
-		cargo llvm-cov nextest --no-default-features --features tls12,$backend --lcov --output-path coverage.lcov
-	done
+	cargo llvm-cov nextest {{args}} --locked --all-features --lcov --output-path coverage.lcov
+
+# =========== LOCAL COMMANDS ===========
+
+build *args:
+	cargo build {{args}} --locked
+
+b *args:
+	just build {{args}}
 
 # Show coverage locally
-cov:
+cov *args:
 	#!/bin/bash -eux
-	cargo llvm-cov nextest --hide-instantiations --html --output-dir coverage
+	cargo llvm-cov nextest {{args}} --locked --all-features --hide-instantiations --html --output-dir coverage
+
+check *args:
+    cargo check {{args}} --locked --all-features
+
+c *args:
+	just check {{args}}
+
+clippy *args:
+	cargo clippy {{args}} --locked --all-features -- -Dclippy::all -Dclippy::pedantic
+
+example *args:
+	cargo run --example {{args}}
+
+e *args:
+	just example {{args}}
+
+msrv *args:
+	cargo +1.77.0 clippy {{args}} --locked --all-features -- -Dclippy::all -Dclippy::pedantic
 
 t *args:
-    just test {{args}}
+	just test {{args}}
 
-# Run all tests
 test *args:
 	#!/bin/bash -eux
 	export RUST_BACKTRACE=1
-	for feature in ring aws_lc_rs; do
-		cargo nextest run --no-default-features --features tls12,$feature {{args}}
-	done
-
-c *args:
-    just check {{args}}
-
-clippy *args:
-	cargo clippy {{args}} --no-default-features --features tls12,ring
-	cargo clippy {{args}} --no-default-features --features tls12,aws_lc_rs
-
-check *args:
-    cargo check {{args}} --no-default-features --features tls12,ring
-    cargo check {{args}} --no-default-features --features tls12,aws_lc_rs
+	cargo nextest run {{args}} --locked --all-features
