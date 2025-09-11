@@ -7,6 +7,7 @@ mod async_read_ready;
 mod cork_stream;
 mod ffi;
 mod ktls_stream;
+mod setup;
 
 use std::future::Future;
 use std::io;
@@ -26,8 +27,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 pub use crate::async_read_ready::AsyncReadReady;
 pub use crate::cork_stream::CorkStream;
-pub use crate::ffi::{setup_ulp, SetupUlpError};
 pub use crate::ktls_stream::KtlsStream;
+pub use crate::setup::{setup_ulp, SetupUlpError};
 
 #[derive(Debug, Default)]
 pub struct CompatibleCiphers {
@@ -174,7 +175,7 @@ fn sample_cipher_setup(
 
     let crypto_info = match kcs.typ {
         KtlsCipherType::AesGcm128 => {
-            ffi::TlsCryptoInfo::AesGcm128(libc::tls12_crypto_info_aes_gcm_128 {
+            setup::TlsCryptoInfo::AesGcm128(libc::tls12_crypto_info_aes_gcm_128 {
                 info: libc::tls_crypto_info {
                     version: ffi_version,
                     cipher_type: libc::TLS_CIPHER_AES_GCM_128 as _,
@@ -186,7 +187,7 @@ fn sample_cipher_setup(
             })
         }
         KtlsCipherType::AesGcm256 => {
-            ffi::TlsCryptoInfo::AesGcm256(libc::tls12_crypto_info_aes_gcm_256 {
+            setup::TlsCryptoInfo::AesGcm256(libc::tls12_crypto_info_aes_gcm_256 {
                 info: libc::tls_crypto_info {
                     version: ffi_version,
                     cipher_type: libc::TLS_CIPHER_AES_GCM_256 as _,
@@ -198,7 +199,7 @@ fn sample_cipher_setup(
             })
         }
         KtlsCipherType::Chacha20Poly1305 => {
-            ffi::TlsCryptoInfo::Chacha20Poly1305(libc::tls12_crypto_info_chacha20_poly1305 {
+            setup::TlsCryptoInfo::Chacha20Poly1305(libc::tls12_crypto_info_chacha20_poly1305 {
                 info: libc::tls_crypto_info {
                     version: ffi_version,
                     cipher_type: libc::TLS_CIPHER_CHACHA20_POLY1305 as _,
@@ -211,7 +212,7 @@ fn sample_cipher_setup(
         }
     };
 
-    ffi::setup_ulp(socket).map_err(Error::UlpError)?;
+    setup::setup_ulp(socket).map_err(Error::UlpError)?;
 
     crypto_info
         .set_tx(socket)
@@ -223,7 +224,7 @@ fn sample_cipher_setup(
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
-    UlpError(#[from] ffi::SetupUlpError),
+    UlpError(#[from] setup::SetupUlpError),
 
     #[error("failed to export secrets")]
     ExportSecrets(#[source] rustls::Error),
@@ -340,8 +341,8 @@ fn setup_inner<S: AsFd>(socket: &S, conn: Connection) -> Result<(), Error> {
         Err(err) => return Err(Error::ExportSecrets(err)),
     };
 
-    ffi::setup_ulp(socket).map_err(Error::UlpError)?;
-    ffi::setup_tls_params(socket, cipher_suite, secrets).map_err(Error::TlsCryptoInfoError)?;
+    setup::setup_ulp(socket).map_err(Error::UlpError)?;
+    setup::setup_tls_params(socket, cipher_suite, secrets).map_err(Error::TlsCryptoInfoError)?;
 
     Ok(())
 }
