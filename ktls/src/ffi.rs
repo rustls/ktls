@@ -1,6 +1,9 @@
+use std::io;
+use std::os::fd::AsFd;
 use std::os::unix::prelude::RawFd;
 
 use ktls_sys::bindings as ktls;
+use nix::sys::socket::{setsockopt, sockopt};
 use rustls::internal::msgs::enums::AlertLevel;
 use rustls::internal::msgs::message::Message;
 use rustls::{AlertDescription, ConnectionTrafficSecrets, SupportedCipherSuite};
@@ -11,12 +14,6 @@ pub(crate) const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 
 pub(crate) const TLS_1_3_VERSION_NUMBER: u16 = (((ktls::TLS_1_3_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_3_VERSION_MINOR & 0xFF) as u16);
 
-/// `setsockopt` level constant: TCP
-const SOL_TCP: libc::c_int = 6;
-
-/// `setsockopt` SOL_TCP name constant: "upper level protocol"
-const TCP_ULP: libc::c_int = 31;
-
 /// `setsockopt` level constant: TLS
 const SOL_TLS: libc::c_int = 282;
 
@@ -26,21 +23,43 @@ const TLS_TX: libc::c_int = 1;
 /// `setsockopt` SOL_TLS level constant: receive (read)
 const TLX_RX: libc::c_int = 2;
 
-pub fn setup_ulp(fd: RawFd) -> std::io::Result<()> {
-    unsafe {
-        if libc::setsockopt(
-            fd,
-            SOL_TCP,
-            TCP_ULP,
-            "tls".as_ptr() as *const libc::c_void,
-            3,
-        ) < 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
+/// Sets the TLS Upper Layer Protocol (ULP).
+///
+/// This should be called before performing any I/O operations on the
+/// socket.
+///
+/// # Errors
+///
+/// [`SetupUlpError`]. The caller may check if the error is due to the system
+/// not supporting kTLS (e.g., kernel module `tls` not being enabled or the
+/// kernel version being too old) with [`SetupUlpError::is_ktls_unsupported`].
+pub fn setup_ulp<S: AsFd>(socket: &S) -> Result<(), SetupUlpError> {
+    setsockopt(socket, sockopt::TcpUlp::default(), b"tls")
+        .map_err(io::Error::from)
+        .map_err(SetupUlpError)
+}
 
-    Ok(())
+#[derive(Debug, thiserror::Error)]
+#[error("Failed to set TLS ULP, error: {0}")]
+/// An error that occurred while configuring the ULP.
+///
+/// This error wraps the underlying `io::Error` that caused the failure.
+/// The caller may check if the error is due to the system not supporting kTLS
+/// (e.g., kernel module `tls` not being enabled or the kernel version being too
+/// old).
+pub struct SetupUlpError(#[source] io::Error);
+
+impl SetupUlpError {
+    /// Returns `true` if the error is due to the system not supporting kTLS.
+    pub fn is_ktls_unsupported(&self) -> bool {
+        matches!(self.0.raw_os_error(), Some(libc::ENOENT))
+    }
+}
+
+impl From<SetupUlpError> for io::Error {
+    fn from(err: SetupUlpError) -> Self {
+        io::Error::other(err)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

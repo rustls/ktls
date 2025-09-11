@@ -11,7 +11,8 @@ mod ktls_stream;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
-use std::os::unix::prelude::{AsRawFd, RawFd};
+use std::os::fd::AsFd;
+use std::os::unix::prelude::AsRawFd;
 
 use futures_util::future::try_join_all;
 use ktls_sys::bindings as sys;
@@ -26,8 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 pub use crate::async_read_ready::AsyncReadReady;
 pub use crate::cork_stream::CorkStream;
-pub use crate::ffi::CryptoInfo;
-use crate::ffi::{KtlsCompatibilityError, setup_tls_info, setup_ulp};
+pub use crate::ffi::{setup_ulp, CryptoInfo, KtlsCompatibilityError, SetupUlpError};
 pub use crate::ktls_stream::KtlsStream;
 
 #[derive(Debug, Default)]
@@ -159,7 +159,10 @@ impl CompatibleCiphers {
     }
 }
 
-fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
+fn sample_cipher_setup(
+    socket: &TcpStream,
+    cipher_suite: SupportedCipherSuite,
+) -> Result<(), Error> {
     let kcs = match KtlsCipherSuite::try_from(cipher_suite) {
         Ok(kcs) => kcs,
         Err(_) => panic!("unsupported cipher suite"),
@@ -204,22 +207,22 @@ fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> 
             })
         }
     };
-    let fd = sock.as_raw_fd();
+    let fd = socket.as_raw_fd();
 
-    setup_ulp(fd).map_err(Error::UlpError)?;
+    ffi::setup_ulp(socket).map_err(Error::UlpError)?;
 
-    setup_tls_info(fd, ffi::Direction::Tx, crypto_info)?;
+    ffi::setup_tls_info(fd, ffi::Direction::Tx, crypto_info)?;
 
     Ok(())
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("failed to enable TLS ULP (upper level protocol): {0}")]
-    UlpError(#[source] std::io::Error),
+    #[error(transparent)]
+    UlpError(#[from] ffi::SetupUlpError),
 
     #[error("kTLS compatibility error: {0}")]
-    KtlsCompatibility(#[from] KtlsCompatibilityError),
+    KtlsCompatibility(#[from] ffi::KtlsCompatibilityError),
 
     #[error("failed to export secrets")]
     ExportSecrets(#[source] rustls::Error),
@@ -245,7 +248,7 @@ pub async fn config_ktls_server<IO>(
     mut stream: tokio_rustls::server::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
-    IO: AsRawFd + AsyncRead + AsyncReadReady + AsyncWrite + Unpin,
+    IO: AsFd + AsRawFd + AsyncRead + AsyncReadReady + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
     let drained = drain(&mut stream)
@@ -254,7 +257,7 @@ where
     let (io, conn) = stream.into_inner();
     let io = io.io;
 
-    setup_inner(io.as_raw_fd(), Connection::Server(conn))?;
+    setup_inner(&io, Connection::Server(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -268,7 +271,7 @@ pub async fn config_ktls_client<IO>(
     mut stream: tokio_rustls::client::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
-    IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
+    IO: AsFd + AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
     let drained = drain(&mut stream)
@@ -277,7 +280,7 @@ where
     let (io, conn) = stream.into_inner();
     let io = io.io;
 
-    setup_inner(io.as_raw_fd(), Connection::Client(conn))?;
+    setup_inner(&io, Connection::Client(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -323,7 +326,7 @@ async fn drain(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<
     Ok(maybe_drained)
 }
 
-fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
+fn setup_inner<S: AsFd>(socket: &S, conn: Connection) -> Result<(), Error> {
     let cipher_suite = match conn.negotiated_cipher_suite() {
         Some(cipher_suite) => cipher_suite,
         None => {
@@ -336,13 +339,13 @@ fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
         Err(err) => return Err(Error::ExportSecrets(err)),
     };
 
-    ffi::setup_ulp(fd).map_err(Error::UlpError)?;
+    ffi::setup_ulp(socket).map_err(Error::UlpError)?;
 
     let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
-    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
+    ffi::setup_tls_info(socket.as_fd().as_raw_fd(), ffi::Direction::Tx, tx)?;
 
     let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
-    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
+    ffi::setup_tls_info(socket.as_fd().as_raw_fd(), ffi::Direction::Rx, rx)?;
 
     Ok(())
 }
