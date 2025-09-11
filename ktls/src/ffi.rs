@@ -1,12 +1,13 @@
-use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::prelude::RawFd;
+use std::{io, mem};
 
 use ktls_sys::bindings as ktls;
 use nix::sys::socket::{setsockopt, sockopt};
+use rustls::crypto::cipher::NONCE_LEN;
 use rustls::internal::msgs::enums::AlertLevel;
 use rustls::internal::msgs::message::Message;
-use rustls::{AlertDescription, ConnectionTrafficSecrets, SupportedCipherSuite};
+use rustls::{AlertDescription, ConnectionTrafficSecrets, ExtractedSecrets, SupportedCipherSuite};
 
 pub(crate) const TLS_1_2_VERSION_NUMBER: u16 = (((ktls::TLS_1_2_VERSION_MAJOR & 0xFF) as u16) << 8)
     | ((ktls::TLS_1_2_VERSION_MINOR & 0xFF) as u16);
@@ -16,12 +17,6 @@ pub(crate) const TLS_1_3_VERSION_NUMBER: u16 = (((ktls::TLS_1_3_VERSION_MAJOR & 
 
 /// `setsockopt` level constant: TLS
 const SOL_TLS: libc::c_int = 282;
-
-/// `setsockopt` SOL_TLS level constant: transmit (write)
-const TLS_TX: libc::c_int = 1;
-
-/// `setsockopt` SOL_TLS level constant: receive (read)
-const TLX_RX: libc::c_int = 2;
 
 /// Sets the TLS Upper Layer Protocol (ULP).
 ///
@@ -62,82 +57,131 @@ impl From<SetupUlpError> for io::Error {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum Direction {
-    // Transmit
-    Tx,
-    // Receive
-    Rx,
+/// Sets the kTLS parameters on the socket after the TLS handshake is completed.
+///
+/// ## Errors
+///
+/// * Invalid crypto materials.
+/// * Syscall error.
+pub(crate) fn setup_tls_params<S: AsFd>(
+    socket: &S,
+    cipher_suite: SupportedCipherSuite,
+    secrets: ExtractedSecrets,
+) -> io::Result<()> {
+    TlsCryptoInfo::extract(cipher_suite, secrets.tx)?.set_tx(socket)?;
+    TlsCryptoInfo::extract(cipher_suite, secrets.rx)?.set_rx(socket)?;
+
+    Ok(())
 }
 
-impl From<Direction> for libc::c_int {
-    fn from(val: Direction) -> Self {
-        match val {
-            Direction::Tx => TLS_TX,
-            Direction::Rx => TLX_RX,
+#[repr(C)]
+#[allow(unused)]
+/// A wrapper around the `libc::tls12_crypto_info_*` structs, use with setting
+/// up the kTLS r/w parameters on the TCP socket.
+///
+/// This is originated from the `nix` crate, which currently does not support
+/// `AES-128-CCM` or `SM4-*`, so we implement our own version here.
+pub(crate) enum TlsCryptoInfo {
+    AesGcm128(libc::tls12_crypto_info_aes_gcm_128),
+    AesGcm256(libc::tls12_crypto_info_aes_gcm_256),
+    AesCcm128(libc::tls12_crypto_info_aes_ccm_128),
+    Chacha20Poly1305(libc::tls12_crypto_info_chacha20_poly1305),
+    Sm4Gcm(libc::tls12_crypto_info_sm4_gcm),
+    Sm4Ccm(libc::tls12_crypto_info_sm4_ccm),
+}
+
+impl TlsCryptoInfo {
+    /// Sets the kTLS parameters on the given file descriptor, assuming that the
+    /// [`TlsCryptoInfo`] is *extract* from the sequence number and
+    /// secrets for the "tx" (transmit) direction.
+    pub(crate) fn set_tx<S: AsFd>(self, socket: &S) -> io::Result<()> {
+        self.set(socket, libc::TLS_TX)
+    }
+
+    /// Sets the kTLS parameters on the given file descriptor, assuming that the
+    /// [`TlsCryptoInfo`] is *extract* from the sequence number and
+    /// secrets for the "rx" (receive) direction.
+    pub(crate) fn set_rx<S: AsFd>(self, socket: &S) -> io::Result<()> {
+        self.set(socket, libc::TLS_RX)
+    }
+
+    /// Sets the kTLS parameters on the given file descriptor.
+    fn set<S: AsFd>(&self, socket: &S, direction: libc::c_int) -> io::Result<()> {
+        let (ffi_ptr, ffi_len) = match self {
+            Self::AesGcm128(crypto_info) => (
+                <*const _>::cast(crypto_info),
+                mem::size_of_val(crypto_info) as libc::socklen_t,
+            ),
+            Self::AesGcm256(crypto_info) => (
+                <*const _>::cast(crypto_info),
+                mem::size_of_val(crypto_info) as libc::socklen_t,
+            ),
+            Self::AesCcm128(crypto_info) => (
+                <*const _>::cast(crypto_info),
+                mem::size_of_val(crypto_info) as libc::socklen_t,
+            ),
+            Self::Chacha20Poly1305(crypto_info) => (
+                <*const _>::cast(crypto_info),
+                mem::size_of_val(crypto_info) as libc::socklen_t,
+            ),
+            Self::Sm4Gcm(crypto_info) => (
+                <*const _>::cast(crypto_info),
+                mem::size_of_val(crypto_info) as libc::socklen_t,
+            ),
+            Self::Sm4Ccm(crypto_info) => (
+                <*const _>::cast(crypto_info),
+                mem::size_of_val(crypto_info) as libc::socklen_t,
+            ),
+        };
+
+        // SAFETY: syscall
+        let ret = unsafe {
+            libc::setsockopt(
+                socket.as_fd().as_raw_fd(),
+                libc::SOL_TLS,
+                direction,
+                ffi_ptr,
+                ffi_len,
+            )
+        };
+
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
         }
+
+        Ok(())
     }
 }
 
-#[allow(dead_code)]
-pub enum CryptoInfo {
-    AesGcm128(ktls::tls12_crypto_info_aes_gcm_128),
-    AesGcm256(ktls::tls12_crypto_info_aes_gcm_256),
-    AesCcm128(ktls::tls12_crypto_info_aes_ccm_128),
-    Chacha20Poly1305(ktls::tls12_crypto_info_chacha20_poly1305),
-    Sm4Gcm(ktls::tls12_crypto_info_sm4_gcm),
-    Sm4Ccm(ktls::tls12_crypto_info_sm4_ccm),
-}
-
-impl CryptoInfo {
-    /// Return the system struct as a pointer.
-    pub fn as_ptr(&self) -> *const libc::c_void {
-        match self {
-            CryptoInfo::AesGcm128(info) => info as *const _ as *const libc::c_void,
-            CryptoInfo::AesGcm256(info) => info as *const _ as *const libc::c_void,
-            CryptoInfo::AesCcm128(info) => info as *const _ as *const libc::c_void,
-            CryptoInfo::Chacha20Poly1305(info) => info as *const _ as *const libc::c_void,
-            CryptoInfo::Sm4Gcm(info) => info as *const _ as *const libc::c_void,
-            CryptoInfo::Sm4Ccm(info) => info as *const _ as *const libc::c_void,
-        }
-    }
-
-    /// Return the system struct size.
-    pub fn size(&self) -> usize {
-        match self {
-            CryptoInfo::AesGcm128(_) => std::mem::size_of::<ktls::tls12_crypto_info_aes_gcm_128>(),
-            CryptoInfo::AesGcm256(_) => std::mem::size_of::<ktls::tls12_crypto_info_aes_gcm_256>(),
-            CryptoInfo::AesCcm128(_) => std::mem::size_of::<ktls::tls12_crypto_info_aes_ccm_128>(),
-            CryptoInfo::Chacha20Poly1305(_) => {
-                std::mem::size_of::<ktls::tls12_crypto_info_chacha20_poly1305>()
-            }
-            CryptoInfo::Sm4Gcm(_) => std::mem::size_of::<ktls::tls12_crypto_info_sm4_gcm>(),
-            CryptoInfo::Sm4Ccm(_) => std::mem::size_of::<ktls::tls12_crypto_info_sm4_ccm>(),
-        }
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum KtlsCompatibilityError {
-    #[error("cipher suite not supported with kTLS: {0:?}")]
-    UnsupportedCipherSuite(SupportedCipherSuite),
-
-    #[error("wrong size key")]
+#[derive(Debug, thiserror::Error)]
+/// Crypto material is invalid, e.g., wrong size key or IV.
+enum InvalidCryptoInfo {
+    #[error("Wrong size key")]
+    /// The provided key has an incorrect size (unlikely).
     WrongSizeKey,
 
-    #[error("wrong size iv")]
-    WrongSizeIv,
+    #[error("The negotiated cipher suite [{0:?}] is not supported by the current kernel")]
+    /// The negotiated cipher suite is not supported by the current kernel.
+    UnsupportedCipherSuite(SupportedCipherSuite),
 }
 
-impl CryptoInfo {
-    /// Try to convert rustls cipher suite and secrets into a `CryptoInfo`.
-    pub fn from_rustls(
+impl From<InvalidCryptoInfo> for io::Error {
+    fn from(err: InvalidCryptoInfo) -> Self {
+        io::Error::other(err)
+    }
+}
+
+impl TlsCryptoInfo {
+    /// Extract the [`TlsCryptoInfo`] from the given
+    /// [`SupportedCipherSuite`] and [`ConnectionTrafficSecrets`].
+    fn extract(
         cipher_suite: SupportedCipherSuite,
         (seq, secrets): (u64, ConnectionTrafficSecrets),
-    ) -> Result<CryptoInfo, KtlsCompatibilityError> {
+    ) -> Result<Self, InvalidCryptoInfo> {
         let version = match cipher_suite {
-            SupportedCipherSuite::Tls12(..) => TLS_1_2_VERSION_NUMBER,
-            SupportedCipherSuite::Tls13(..) => TLS_1_3_VERSION_NUMBER,
+            #[cfg(feature = "tls12")]
+            SupportedCipherSuite::Tls12(..) => libc::TLS_1_2_VERSION,
+            SupportedCipherSuite::Tls13(..) => libc::TLS_1_3_VERSION,
         };
 
         Ok(match secrets {
@@ -146,115 +190,62 @@ impl CryptoInfo {
                 // rustls 0.21 and 0.22, the extract_keys codepath was changed,
                 // so, for TLS 1.2, both GCM-128 and GCM-256 return the
                 // Aes128Gcm variant.
+                //
+                // This issue is fixed since rustls 0.23.
 
-                match key.as_ref().len() {
-                    16 => CryptoInfo::AesGcm128(ktls::tls12_crypto_info_aes_gcm_128 {
-                        info: ktls::tls_crypto_info {
-                            version,
-                            cipher_type: ktls::TLS_CIPHER_AES_GCM_128 as _,
-                        },
-                        iv: iv
-                            .as_ref()
-                            .get(4..)
-                            .expect("AES-GCM-128 iv is 8 bytes")
-                            .try_into()
-                            .expect("AES-GCM-128 iv is 8 bytes"),
-                        key: key
-                            .as_ref()
-                            .try_into()
-                            .expect("AES-GCM-128 key is 16 bytes"),
-                        salt: iv
-                            .as_ref()
-                            .get(..4)
-                            .expect("AES-GCM-128 salt is 4 bytes")
-                            .try_into()
-                            .expect("AES-GCM-128 salt is 4 bytes"),
-                        rec_seq: seq.to_be_bytes(),
-                    }),
-                    32 => CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
-                        info: ktls::tls_crypto_info {
-                            version,
-                            cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
-                        },
-                        iv: iv
-                            .as_ref()
-                            .get(4..)
-                            .expect("AES-GCM-256 iv is 8 bytes")
-                            .try_into()
-                            .expect("AES-GCM-256 iv is 8 bytes"),
-                        key: key
-                            .as_ref()
-                            .try_into()
-                            .expect("AES-GCM-256 key is 32 bytes"),
-                        salt: iv
-                            .as_ref()
-                            .get(..4)
-                            .expect("AES-GCM-256 salt is 4 bytes")
-                            .try_into()
-                            .expect("AES-GCM-256 salt is 4 bytes"),
-                        rec_seq: seq.to_be_bytes(),
-                    }),
-                    _ => unreachable!("GCM key length is not 16 or 32"),
-                }
-            }
-            ConnectionTrafficSecrets::Aes256Gcm { key, iv } => {
-                CryptoInfo::AesGcm256(ktls::tls12_crypto_info_aes_gcm_256 {
-                    info: ktls::tls_crypto_info {
+                let iv_and_salt: &[u8; NONCE_LEN] = iv.as_ref().try_into().unwrap();
+
+                Self::AesGcm128(libc::tls12_crypto_info_aes_gcm_128 {
+                    info: libc::tls_crypto_info {
                         version,
-                        cipher_type: ktls::TLS_CIPHER_AES_GCM_256 as _,
+                        cipher_type: libc::TLS_CIPHER_AES_GCM_128,
                     },
-                    iv: iv
-                        .as_ref()
-                        .get(4..)
-                        .expect("AES-GCM-256 iv is 8 bytes")
-                        .try_into()
-                        .expect("AES-GCM-256 iv is 8 bytes"),
+                    iv: iv_and_salt[4..].try_into().unwrap(),
                     key: key
                         .as_ref()
                         .try_into()
-                        .expect("AES-GCM-256 key is 32 bytes"),
-                    salt: iv
+                        .map_err(|_| InvalidCryptoInfo::WrongSizeKey)?,
+                    salt: iv_and_salt[..4].try_into().unwrap(),
+                    rec_seq: seq.to_be_bytes(),
+                })
+            }
+            ConnectionTrafficSecrets::Aes256Gcm { key, iv } => {
+                let iv_and_salt: &[u8; NONCE_LEN] = iv.as_ref().try_into().unwrap();
+
+                Self::AesGcm256(libc::tls12_crypto_info_aes_gcm_256 {
+                    info: libc::tls_crypto_info {
+                        version,
+                        cipher_type: libc::TLS_CIPHER_AES_GCM_256,
+                    },
+                    iv: iv_and_salt[4..].try_into().unwrap(),
+                    key: key
                         .as_ref()
-                        .get(..4)
-                        .expect("AES-GCM-256 salt is 4 bytes")
                         .try_into()
-                        .expect("AES-GCM-256 salt is 4 bytes"),
+                        .map_err(|_| InvalidCryptoInfo::WrongSizeKey)?,
+                    salt: iv_and_salt[..4].try_into().unwrap(),
                     rec_seq: seq.to_be_bytes(),
                 })
             }
             ConnectionTrafficSecrets::Chacha20Poly1305 { key, iv } => {
-                CryptoInfo::Chacha20Poly1305(ktls::tls12_crypto_info_chacha20_poly1305 {
-                    info: ktls::tls_crypto_info {
+                Self::Chacha20Poly1305(libc::tls12_crypto_info_chacha20_poly1305 {
+                    info: libc::tls_crypto_info {
                         version,
-                        cipher_type: ktls::TLS_CIPHER_CHACHA20_POLY1305 as _,
+                        cipher_type: libc::TLS_CIPHER_CHACHA20_POLY1305,
                     },
-                    iv: iv
-                        .as_ref()
-                        .try_into()
-                        .expect("Chacha20-Poly1305 iv is 12 bytes"),
+                    iv: iv.as_ref().try_into().unwrap(),
                     key: key
                         .as_ref()
                         .try_into()
-                        .expect("Chacha20-Poly1305 key is 32 bytes"),
-                    salt: ktls::__IncompleteArrayField::new(),
+                        .map_err(|_| InvalidCryptoInfo::WrongSizeKey)?,
+                    salt: [],
                     rec_seq: seq.to_be_bytes(),
                 })
             }
             _ => {
-                return Err(KtlsCompatibilityError::UnsupportedCipherSuite(cipher_suite));
+                return Err(InvalidCryptoInfo::UnsupportedCipherSuite(cipher_suite));
             }
         })
     }
-}
-
-pub fn setup_tls_info(fd: RawFd, dir: Direction, info: CryptoInfo) -> Result<(), crate::Error> {
-    let ret = unsafe { libc::setsockopt(fd, SOL_TLS, dir.into(), info.as_ptr(), info.size() as _) };
-    if ret < 0 {
-        return Err(crate::Error::TlsCryptoInfoError(
-            std::io::Error::last_os_error(),
-        ));
-    }
-    Ok(())
 }
 
 const TLS_SET_RECORD_TYPE: libc::c_int = 1;

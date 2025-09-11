@@ -15,7 +15,6 @@ use std::os::fd::AsFd;
 use std::os::unix::prelude::AsRawFd;
 
 use futures_util::future::try_join_all;
-use ktls_sys::bindings as sys;
 #[cfg(feature = "aws_lc_rs")]
 use rustls::crypto::aws_lc_rs::cipher_suite;
 #[cfg(feature = "ring")]
@@ -27,7 +26,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 pub use crate::async_read_ready::AsyncReadReady;
 pub use crate::cork_stream::CorkStream;
-pub use crate::ffi::{setup_ulp, CryptoInfo, KtlsCompatibilityError, SetupUlpError};
+pub use crate::ffi::{setup_ulp, SetupUlpError};
 pub use crate::ktls_stream::KtlsStream;
 
 #[derive(Debug, Default)]
@@ -174,31 +173,35 @@ fn sample_cipher_setup(
     };
 
     let crypto_info = match kcs.typ {
-        KtlsCipherType::AesGcm128 => CryptoInfo::AesGcm128(sys::tls12_crypto_info_aes_gcm_128 {
-            info: sys::tls_crypto_info {
-                version: ffi_version,
-                cipher_type: sys::TLS_CIPHER_AES_GCM_128 as _,
-            },
-            iv: Default::default(),
-            key: Default::default(),
-            salt: Default::default(),
-            rec_seq: Default::default(),
-        }),
-        KtlsCipherType::AesGcm256 => CryptoInfo::AesGcm256(sys::tls12_crypto_info_aes_gcm_256 {
-            info: sys::tls_crypto_info {
-                version: ffi_version,
-                cipher_type: sys::TLS_CIPHER_AES_GCM_256 as _,
-            },
-            iv: Default::default(),
-            key: Default::default(),
-            salt: Default::default(),
-            rec_seq: Default::default(),
-        }),
-        KtlsCipherType::Chacha20Poly1305 => {
-            CryptoInfo::Chacha20Poly1305(sys::tls12_crypto_info_chacha20_poly1305 {
-                info: sys::tls_crypto_info {
+        KtlsCipherType::AesGcm128 => {
+            ffi::TlsCryptoInfo::AesGcm128(libc::tls12_crypto_info_aes_gcm_128 {
+                info: libc::tls_crypto_info {
                     version: ffi_version,
-                    cipher_type: sys::TLS_CIPHER_CHACHA20_POLY1305 as _,
+                    cipher_type: libc::TLS_CIPHER_AES_GCM_128 as _,
+                },
+                iv: Default::default(),
+                key: Default::default(),
+                salt: Default::default(),
+                rec_seq: Default::default(),
+            })
+        }
+        KtlsCipherType::AesGcm256 => {
+            ffi::TlsCryptoInfo::AesGcm256(libc::tls12_crypto_info_aes_gcm_256 {
+                info: libc::tls_crypto_info {
+                    version: ffi_version,
+                    cipher_type: libc::TLS_CIPHER_AES_GCM_256 as _,
+                },
+                iv: Default::default(),
+                key: Default::default(),
+                salt: Default::default(),
+                rec_seq: Default::default(),
+            })
+        }
+        KtlsCipherType::Chacha20Poly1305 => {
+            ffi::TlsCryptoInfo::Chacha20Poly1305(libc::tls12_crypto_info_chacha20_poly1305 {
+                info: libc::tls_crypto_info {
+                    version: ffi_version,
+                    cipher_type: libc::TLS_CIPHER_CHACHA20_POLY1305 as _,
                 },
                 iv: Default::default(),
                 key: Default::default(),
@@ -207,11 +210,12 @@ fn sample_cipher_setup(
             })
         }
     };
-    let fd = socket.as_raw_fd();
 
     ffi::setup_ulp(socket).map_err(Error::UlpError)?;
 
-    ffi::setup_tls_info(fd, ffi::Direction::Tx, crypto_info)?;
+    crypto_info
+        .set_tx(socket)
+        .map_err(Error::TlsCryptoInfoError)?;
 
     Ok(())
 }
@@ -220,9 +224,6 @@ fn sample_cipher_setup(
 pub enum Error {
     #[error(transparent)]
     UlpError(#[from] ffi::SetupUlpError),
-
-    #[error("kTLS compatibility error: {0}")]
-    KtlsCompatibility(#[from] ffi::KtlsCompatibilityError),
 
     #[error("failed to export secrets")]
     ExportSecrets(#[source] rustls::Error),
@@ -340,12 +341,7 @@ fn setup_inner<S: AsFd>(socket: &S, conn: Connection) -> Result<(), Error> {
     };
 
     ffi::setup_ulp(socket).map_err(Error::UlpError)?;
-
-    let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
-    ffi::setup_tls_info(socket.as_fd().as_raw_fd(), ffi::Direction::Tx, tx)?;
-
-    let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
-    ffi::setup_tls_info(socket.as_fd().as_raw_fd(), ffi::Direction::Rx, rx)?;
+    ffi::setup_tls_params(socket, cipher_suite, secrets).map_err(Error::TlsCryptoInfoError)?;
 
     Ok(())
 }
