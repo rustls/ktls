@@ -251,16 +251,19 @@ struct Cmsg<const N: usize> {
 
 impl<const N: usize> Cmsg<N> {
     fn new(level: i32, typ: i32, data: [u8; N]) -> Self {
-        Self {
-            hdr: libc::cmsghdr {
-                // on Linux this is a usize, on macOS this is a u32
-                #[allow(clippy::unnecessary_cast)]
-                cmsg_len: (memoffset::offset_of!(Self, data) + N) as _,
-                cmsg_level: level,
-                cmsg_type: typ,
-            },
-            data,
-        }
+        // SAFETY: cmsghdr is a POD C struct; zeroing it is valid, and every
+        // meaningful field is assigned immediately below. Avoids struct literal
+        // syntax, which fails on musl where libc exposes extra padding fields.
+        let hdr = unsafe {
+            let mut h: libc::cmsghdr = std::mem::zeroed();
+            // on Linux this is a usize, on macOS this is a u32
+            #[allow(clippy::unnecessary_cast)]
+            { h.cmsg_len = (memoffset::offset_of!(Self, data) + N) as _; }
+            h.cmsg_level = level;
+            h.cmsg_type = typ;
+            h
+        };
+        Self { hdr, data }
     }
 }
 
@@ -272,17 +275,20 @@ pub fn send_close_notify(fd: RawFd) -> std::io::Result<()> {
 
     let mut cmsg = Cmsg::new(SOL_TLS, TLS_SET_RECORD_TYPE, [ALERT]);
 
-    let msg = libc::msghdr {
-        msg_name: std::ptr::null_mut(),
-        msg_namelen: 0,
-        msg_iov: &mut libc::iovec {
-            iov_base: data.as_mut_ptr() as _,
-            iov_len: data.len(),
-        },
-        msg_iovlen: 1,
-        msg_control: &mut cmsg as *mut _ as *mut _,
-        msg_controllen: cmsg.hdr.cmsg_len,
-        msg_flags: 0,
+    let mut iov = libc::iovec {
+        iov_base: data.as_mut_ptr() as _,
+        iov_len: data.len(),
+    };
+    // SAFETY: msghdr is a POD C struct; zeroing it is valid. Avoids struct
+    // literal syntax, which is forbidden on musl where libc marks padding
+    // fields (__pad1, __pad2) as private.
+    let msg = unsafe {
+        let mut m: libc::msghdr = std::mem::zeroed();
+        m.msg_iov = &mut iov;
+        m.msg_iovlen = 1;
+        m.msg_control = &mut cmsg as *mut _ as *mut _;
+        m.msg_controllen = cmsg.hdr.cmsg_len;
+        m
     };
 
     let ret = unsafe { libc::sendmsg(fd, &msg, 0) };
