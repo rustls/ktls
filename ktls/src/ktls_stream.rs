@@ -225,12 +225,31 @@ where
                         return task::Poll::Ready(Ok(()));
                     }
                     TlsGetRecordType::Handshake => {
-                        // TODO: this is where we receive TLS 1.3 resumption tickets,
-                        // should those be stored anywhere? I'm not even sure what
-                        // format they have at this point
-                        tracing::trace!(
-                            "ignoring handshake message (probably a resumption ticket)"
-                        );
+                        // https://www.rfc-editor.org/info/rfc9846/#appendix-B.3
+                        const MSG_NEW_SESSION_TICKET: u8 = 4;
+                        const MSG_KEY_UPDATE: u8 = 24;
+                        let message_type = r.iovs().next().and_then(|iov| iov.first());
+                        match message_type {
+                            Some(&MSG_KEY_UPDATE) => {
+                                // KeyUpdate is fatal: This crate cannot switch traffic
+                                // keys, so every read after the peer rekeys would fail
+                                // to decrypt. Recent kernels (6.14+) support rekeying,
+                                // but it's not implemented here.
+                                return task::Poll::Ready(Err(io::Error::new(
+                                    io::ErrorKind::Unsupported,
+                                    "peer sent a TLS 1.3 KeyUpdate, which is currently unsupported by the ktls crate",
+                                )));
+                            }
+                            Some(&MSG_NEW_SESSION_TICKET) => {
+                                // NewSessionTicket is safe to ignore: A ticket only
+                                // matters if you want to resume later. Dropping it
+                                // doesn't affect the current connection.
+                                tracing::trace!("ignoring NewSessionTicket");
+                            }
+                            other => {
+                                tracing::trace!(?other, "ignoring unexpected handshake message");
+                            }
+                        }
                     }
                     TlsGetRecordType::ApplicationData => {
                         unreachable!(
