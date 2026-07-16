@@ -269,7 +269,7 @@ where
         buf: &[u8],
     ) -> task::Poll<io::Result<usize>> {
         if self.write_closed {
-            return task::Poll::Ready(Ok(0));
+            return task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
 
         self.project().inner.poll_write(cx, buf)
