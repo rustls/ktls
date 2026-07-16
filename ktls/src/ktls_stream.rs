@@ -207,7 +207,10 @@ where
                                 if let Err(e) =
                                     crate::ffi::send_close_notify(this.inner.as_raw_fd())
                                 {
-                                    return Err(e).into();
+                                    // This can fail in case of a full send buffer (EAGAIN),
+                                    // or a dead socket. Ignore the error, as replying with
+                                    // close_notify is best-effort.
+                                    tracing::trace!("failed to reply with close_notify: {e}");
                                 }
                                 // the file descriptor will be closed when the stream is dropped,
                                 // we already protect against writes-after-close_notify through

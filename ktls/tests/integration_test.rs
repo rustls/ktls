@@ -561,3 +561,81 @@ fn single_suite_provider(cipher_suite: KtlsCipherSuite) -> Arc<CryptoProvider> {
 
     Arc::new(provider)
 }
+
+#[tokio::test]
+async fn read_returns_eof_when_close_notify_reply_would_block() {
+    let cipher_suite = KtlsCipherSuite {
+        version: KtlsVersion::TLS13,
+        typ: KtlsCipherType::AesGcm128,
+    };
+
+    let ckey = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+
+    let mut server_config =
+        ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
+            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![ckey.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(ckey.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+    server_config.enable_secret_extraction = true;
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let ln = TcpListener::bind("[::]:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+
+    let (buffer_full_tx, buffer_full_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let jh = tokio::spawn(async move {
+        let (stream, _) = ln.accept().await.unwrap();
+        // A tiny send buffer keeps the fill loop below short.
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(4096)
+            .unwrap();
+        let stream = CorkStream::new(stream);
+        let stream = acceptor.accept(stream).await.unwrap();
+        let mut stream = ktls::config_ktls_server(stream).await.unwrap();
+
+        // 1. Fill the send buffer: the client never reads, so once a
+        // write stops completing within the timeout, the buffer is full.
+        let chunk = vec![0u8; 65536];
+        while let Ok(res) =
+            tokio::time::timeout(Duration::from_millis(250), stream.write(&chunk)).await
+        {
+            res.unwrap();
+        }
+
+        // 2. Tell the client the buffer is full.
+        buffer_full_tx.send(()).unwrap();
+
+        // 4. The peer has sent close_notify and there is no room to
+        // reply. The read must still deliver EOF, not an error.
+        let mut buf = [0u8; 1];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0, "expected EOF after peer close_notify");
+    });
+
+    let mut root_store = RootCertStore::empty();
+    root_store.add(ckey.cert.der().clone()).unwrap();
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let tls_connector = TlsConnector::from(Arc::new(client_config));
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut stream = tls_connector
+        .connect("localhost".try_into().unwrap(), stream)
+        .await
+        .unwrap();
+
+    // 3. Send close_notify while the server cannot reply.
+    buffer_full_rx.await.unwrap();
+    stream.shutdown().await.unwrap();
+
+    // 5. Hold the socket open until the server observes EOF, so it sees the
+    // alert rather than a reset.
+    jh.await.unwrap();
+}
