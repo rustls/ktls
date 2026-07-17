@@ -193,13 +193,18 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
                         stream.read_exact(&mut buf[..1]).await.is_err(),
                         "Session still open?"
                     );
+
+                    debug!("Server trying to write after the peer closed");
+                    let err = stream.write(&PAYLOADS.server).await.unwrap_err();
+                    assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
                 }
                 ServerTestFlavor::ServerCloses => {
                     debug!("Server sending close notify (5/5)");
                     stream.shutdown().await.unwrap();
 
                     debug!("Server trying to write after closing");
-                    stream.write_all(&PAYLOADS.server).await.unwrap_err();
+                    let err = stream.write(&PAYLOADS.server).await.unwrap_err();
+                    assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
                 }
             }
 
@@ -424,6 +429,10 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
         buf.len()
     );
     assert!(stream.read_exact(buf).await.is_err(), "Session still open?");
+
+    debug!("Client trying to write after the peer closed");
+    let err = stream.write(&PAYLOADS.client).await.unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
 
     jh.await.unwrap();
 }
