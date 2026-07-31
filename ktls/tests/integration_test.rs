@@ -639,3 +639,65 @@ async fn read_returns_eof_when_close_notify_reply_would_block() {
     // alert rather than a reset.
     jh.await.unwrap();
 }
+
+#[tokio::test]
+async fn missing_close_notify_is_unexpected_eof() {
+    let cipher_suite = KtlsCipherSuite {
+        version: KtlsVersion::TLS13,
+        typ: KtlsCipherType::AesGcm128,
+    };
+
+    let ckey = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+
+    let mut server_config =
+        ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
+            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![ckey.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(ckey.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+    server_config.enable_secret_extraction = true;
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let ln = TcpListener::bind("[::]:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+
+    let mut root_store = RootCertStore::empty();
+    root_store.add(ckey.cert.der().clone()).unwrap();
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let tls_connector = TlsConnector::from(Arc::new(client_config));
+
+    let server = async {
+        let (stream, _) = ln.accept().await.unwrap();
+        let stream = CorkStream::new(stream);
+        let stream = acceptor.accept(stream).await.unwrap();
+        ktls::config_ktls_server(stream).await.unwrap()
+    };
+    let client = async {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        tls_connector
+            .connect("localhost".try_into().unwrap(), stream)
+            .await
+            .unwrap()
+    };
+    let (mut server, mut client) = tokio::join!(server, client);
+
+    // 1. Sanity round trip.
+    client.write_all(b"hello").await.unwrap();
+    client.flush().await.unwrap();
+    let mut buf = [0u8; 5];
+    server.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+
+    // 2. The client sends a bare TCP FIN, bypassing the TLS shutdown.
+    client.get_mut().0.shutdown().await.unwrap();
+
+    // 3. The server must report truncation, not end-of-stream.
+    let err = server.read(&mut buf).await.unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "{err}");
+}

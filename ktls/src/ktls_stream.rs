@@ -109,6 +109,7 @@ where
             return task::Poll::Ready(Ok(()));
         }
 
+        let filled_before = buf.filled().len();
         let read_res = this.inner.as_mut().poll_read(cx, buf);
         if let task::Poll::Ready(Err(e)) = &read_res {
             // 5 is a generic "input/output error", it happens when
@@ -255,6 +256,18 @@ where
                 // message is available.
                 cx.waker().wake_by_ref();
                 return task::Poll::Pending;
+            }
+        }
+
+        if let task::Poll::Ready(Ok(())) = &read_res {
+            if buf.filled().len() == filled_before {
+                // A transport EOF before the peer's close_notify means the stream was
+                // truncated--possibly by an attacker, since a TCP FIN is not
+                // authenticated. Report it as an error.
+                return task::Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "peer closed connection without sending TLS close_notify",
+                )));
             }
         }
 
