@@ -14,9 +14,9 @@ repository.workspace = true
 [dependencies]
 futures-util = "0.3.30"
 ktls-sys = "1.0.1"
-libc = { version = "0.2.155", features = ["const-extern-fn"] }
+libc = { version = "0.2.175", features = ["const-extern-fn"] }
 memoffset = "0.9.1"
-nix = { version = "0.29.0", features = ["socket", "uio", "net"] }
+nix = { version = "0.30.1", features = ["socket", "uio", "net"] }
 num_enum = "0.7.3"
 pin-project-lite = "0.2.14"
 rustls = { version = "0.23.12", default-features = false }

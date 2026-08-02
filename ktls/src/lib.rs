@@ -7,14 +7,15 @@ mod async_read_ready;
 mod cork_stream;
 mod ffi;
 mod ktls_stream;
+mod setup;
 
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
-use std::os::unix::prelude::{AsRawFd, RawFd};
+use std::os::fd::AsFd;
+use std::os::unix::prelude::AsRawFd;
 
 use futures_util::future::try_join_all;
-use ktls_sys::bindings as sys;
 #[cfg(feature = "aws_lc_rs")]
 use rustls::crypto::aws_lc_rs::cipher_suite;
 #[cfg(feature = "ring")]
@@ -26,9 +27,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 pub use crate::async_read_ready::AsyncReadReady;
 pub use crate::cork_stream::CorkStream;
-pub use crate::ffi::CryptoInfo;
-use crate::ffi::{KtlsCompatibilityError, setup_tls_info, setup_ulp};
 pub use crate::ktls_stream::KtlsStream;
+pub use crate::setup::{setup_ulp, SetupUlpError};
 
 #[derive(Debug, Default)]
 pub struct CompatibleCiphers {
@@ -159,7 +159,10 @@ impl CompatibleCiphers {
     }
 }
 
-fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> Result<(), Error> {
+fn sample_cipher_setup(
+    socket: &TcpStream,
+    cipher_suite: SupportedCipherSuite,
+) -> Result<(), Error> {
     let kcs = match KtlsCipherSuite::try_from(cipher_suite) {
         Ok(kcs) => kcs,
         Err(_) => panic!("unsupported cipher suite"),
@@ -171,31 +174,35 @@ fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> 
     };
 
     let crypto_info = match kcs.typ {
-        KtlsCipherType::AesGcm128 => CryptoInfo::AesGcm128(sys::tls12_crypto_info_aes_gcm_128 {
-            info: sys::tls_crypto_info {
-                version: ffi_version,
-                cipher_type: sys::TLS_CIPHER_AES_GCM_128 as _,
-            },
-            iv: Default::default(),
-            key: Default::default(),
-            salt: Default::default(),
-            rec_seq: Default::default(),
-        }),
-        KtlsCipherType::AesGcm256 => CryptoInfo::AesGcm256(sys::tls12_crypto_info_aes_gcm_256 {
-            info: sys::tls_crypto_info {
-                version: ffi_version,
-                cipher_type: sys::TLS_CIPHER_AES_GCM_256 as _,
-            },
-            iv: Default::default(),
-            key: Default::default(),
-            salt: Default::default(),
-            rec_seq: Default::default(),
-        }),
-        KtlsCipherType::Chacha20Poly1305 => {
-            CryptoInfo::Chacha20Poly1305(sys::tls12_crypto_info_chacha20_poly1305 {
-                info: sys::tls_crypto_info {
+        KtlsCipherType::AesGcm128 => {
+            setup::TlsCryptoInfo::AesGcm128(libc::tls12_crypto_info_aes_gcm_128 {
+                info: libc::tls_crypto_info {
                     version: ffi_version,
-                    cipher_type: sys::TLS_CIPHER_CHACHA20_POLY1305 as _,
+                    cipher_type: libc::TLS_CIPHER_AES_GCM_128 as _,
+                },
+                iv: Default::default(),
+                key: Default::default(),
+                salt: Default::default(),
+                rec_seq: Default::default(),
+            })
+        }
+        KtlsCipherType::AesGcm256 => {
+            setup::TlsCryptoInfo::AesGcm256(libc::tls12_crypto_info_aes_gcm_256 {
+                info: libc::tls_crypto_info {
+                    version: ffi_version,
+                    cipher_type: libc::TLS_CIPHER_AES_GCM_256 as _,
+                },
+                iv: Default::default(),
+                key: Default::default(),
+                salt: Default::default(),
+                rec_seq: Default::default(),
+            })
+        }
+        KtlsCipherType::Chacha20Poly1305 => {
+            setup::TlsCryptoInfo::Chacha20Poly1305(libc::tls12_crypto_info_chacha20_poly1305 {
+                info: libc::tls_crypto_info {
+                    version: ffi_version,
+                    cipher_type: libc::TLS_CIPHER_CHACHA20_POLY1305 as _,
                 },
                 iv: Default::default(),
                 key: Default::default(),
@@ -204,22 +211,20 @@ fn sample_cipher_setup(sock: &TcpStream, cipher_suite: SupportedCipherSuite) -> 
             })
         }
     };
-    let fd = sock.as_raw_fd();
 
-    setup_ulp(fd).map_err(Error::UlpError)?;
+    setup::setup_ulp(socket).map_err(Error::UlpError)?;
 
-    setup_tls_info(fd, ffi::Direction::Tx, crypto_info)?;
+    crypto_info
+        .set_tx(socket)
+        .map_err(Error::TlsCryptoInfoError)?;
 
     Ok(())
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("failed to enable TLS ULP (upper level protocol): {0}")]
-    UlpError(#[source] std::io::Error),
-
-    #[error("kTLS compatibility error: {0}")]
-    KtlsCompatibility(#[from] KtlsCompatibilityError),
+    #[error(transparent)]
+    UlpError(#[from] setup::SetupUlpError),
 
     #[error("failed to export secrets")]
     ExportSecrets(#[source] rustls::Error),
@@ -245,7 +250,7 @@ pub async fn config_ktls_server<IO>(
     mut stream: tokio_rustls::server::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
-    IO: AsRawFd + AsyncRead + AsyncReadReady + AsyncWrite + Unpin,
+    IO: AsFd + AsRawFd + AsyncRead + AsyncReadReady + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
     let drained = drain(&mut stream)
@@ -254,7 +259,7 @@ where
     let (io, conn) = stream.into_inner();
     let io = io.io;
 
-    setup_inner(io.as_raw_fd(), Connection::Server(conn))?;
+    setup_inner(&io, Connection::Server(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -268,7 +273,7 @@ pub async fn config_ktls_client<IO>(
     mut stream: tokio_rustls::client::TlsStream<CorkStream<IO>>,
 ) -> Result<KtlsStream<IO>, Error>
 where
-    IO: AsRawFd + AsyncRead + AsyncWrite + Unpin,
+    IO: AsFd + AsRawFd + AsyncRead + AsyncWrite + Unpin,
 {
     stream.get_mut().0.corked = true;
     let drained = drain(&mut stream)
@@ -277,7 +282,7 @@ where
     let (io, conn) = stream.into_inner();
     let io = io.io;
 
-    setup_inner(io.as_raw_fd(), Connection::Client(conn))?;
+    setup_inner(&io, Connection::Client(conn))?;
     Ok(KtlsStream::new(io, drained))
 }
 
@@ -323,7 +328,7 @@ async fn drain(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<
     Ok(maybe_drained)
 }
 
-fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
+fn setup_inner<S: AsFd>(socket: &S, conn: Connection) -> Result<(), Error> {
     let cipher_suite = match conn.negotiated_cipher_suite() {
         Some(cipher_suite) => cipher_suite,
         None => {
@@ -336,13 +341,8 @@ fn setup_inner(fd: RawFd, conn: Connection) -> Result<(), Error> {
         Err(err) => return Err(Error::ExportSecrets(err)),
     };
 
-    ffi::setup_ulp(fd).map_err(Error::UlpError)?;
-
-    let tx = CryptoInfo::from_rustls(cipher_suite, secrets.tx)?;
-    setup_tls_info(fd, ffi::Direction::Tx, tx)?;
-
-    let rx = CryptoInfo::from_rustls(cipher_suite, secrets.rx)?;
-    setup_tls_info(fd, ffi::Direction::Rx, rx)?;
+    setup::setup_ulp(socket).map_err(Error::UlpError)?;
+    setup::setup_tls_params(socket, cipher_suite, secrets).map_err(Error::TlsCryptoInfoError)?;
 
     Ok(())
 }
