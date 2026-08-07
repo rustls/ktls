@@ -640,6 +640,36 @@ async fn read_returns_eof_when_close_notify_reply_would_block() {
     jh.await.unwrap();
 }
 
+/// The kernel cannot switch traffic keys, so a peer-initiated TLS 1.3
+/// KeyUpdate must fail reads with a clear error instead of the opaque
+/// decrypt failures every later read would produce.
+#[tokio::test]
+async fn key_update_fails_reads_with_clear_error() {
+    let cipher_suite = KtlsCipherSuite {
+        version: KtlsVersion::TLS13,
+        typ: KtlsCipherType::AesGcm128,
+    };
+
+    let (mut server, mut client) = ktls_server_rustls_client(cipher_suite).await;
+
+    // 1. Sanity round trip before the rekey.
+    client.write_all(b"hello").await.unwrap();
+    client.flush().await.unwrap();
+    let mut buf = [0u8; 5];
+    server.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+
+    // 2. The client rekeys, then writes with the new keys.
+    client.get_mut().1.refresh_traffic_keys().unwrap();
+    client.write_all(b"rekeyed").await.unwrap();
+    client.flush().await.unwrap();
+
+    // 3. The server's next read must report the KeyUpdate clearly.
+    let err = server.read(&mut buf).await.unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+    assert!(err.to_string().contains("KeyUpdate"), "{err}");
+}
+
 #[tokio::test]
 async fn missing_close_notify_is_unexpected_eof() {
     let cipher_suite = KtlsCipherSuite {
@@ -647,6 +677,30 @@ async fn missing_close_notify_is_unexpected_eof() {
         typ: KtlsCipherType::AesGcm128,
     };
 
+    let (mut server, mut client) = ktls_server_rustls_client(cipher_suite).await;
+
+    // 1. Sanity round trip.
+    client.write_all(b"hello").await.unwrap();
+    client.flush().await.unwrap();
+    let mut buf = [0u8; 5];
+    server.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+
+    // 2. The client sends a bare TCP FIN, bypassing the TLS shutdown.
+    client.get_mut().0.shutdown().await.unwrap();
+
+    // 3. The server must report truncation, not end-of-stream.
+    let err = server.read(&mut buf).await.unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "{err}");
+}
+
+/// Handshake + kTLS config for one ktls server and one plain rustls client.
+async fn ktls_server_rustls_client(
+    cipher_suite: KtlsCipherSuite,
+) -> (
+    ktls::KtlsStream<TcpStream>,
+    tokio_rustls::client::TlsStream<TcpStream>,
+) {
     let ckey = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
 
     let mut server_config =
@@ -685,19 +739,5 @@ async fn missing_close_notify_is_unexpected_eof() {
             .await
             .unwrap()
     };
-    let (mut server, mut client) = tokio::join!(server, client);
-
-    // 1. Sanity round trip.
-    client.write_all(b"hello").await.unwrap();
-    client.flush().await.unwrap();
-    let mut buf = [0u8; 5];
-    server.read_exact(&mut buf).await.unwrap();
-    assert_eq!(&buf, b"hello");
-
-    // 2. The client sends a bare TCP FIN, bypassing the TLS shutdown.
-    client.get_mut().0.shutdown().await.unwrap();
-
-    // 3. The server must report truncation, not end-of-stream.
-    let err = server.read(&mut buf).await.unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "{err}");
+    tokio::join!(server, client)
 }
