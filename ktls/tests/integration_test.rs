@@ -1,28 +1,20 @@
-use std::{
-    io,
-    os::fd::{AsRawFd, RawFd},
-    sync::Arc,
-    task,
-    time::Duration,
-};
+use std::os::fd::{AsRawFd, RawFd};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{io, task};
 
 use ktls::{AsyncReadReady, CorkStream, KtlsCipherSuite, KtlsCipherType, KtlsVersion};
 use lazy_static::lazy_static;
 use rcgen::generate_simple_self_signed;
-use rustls::{
-    client::Resumption, crypto::CryptoProvider, ClientConfig, RootCertStore, ServerConfig,
-    SupportedCipherSuite,
-};
-
+use rustls::client::Resumption;
 #[cfg(feature = "aws_lc_rs")]
 use rustls::crypto::aws_lc_rs::cipher_suite;
 #[cfg(feature = "ring")]
 use rustls::crypto::ring::cipher_suite;
-
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use rustls::crypto::CryptoProvider;
+use rustls::{ClientConfig, RootCertStore, ServerConfig, SupportedCipherSuite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 use tracing::{debug, Instrument};
 use tracing_subscriber::EnvFilter;
@@ -71,7 +63,9 @@ fn all_suites() -> Vec<SupportedCipherSuite> {
 
 #[tokio::test]
 async fn compatible_ciphers() {
-    let cc = ktls::CompatibleCiphers::new().await.unwrap();
+    let cc = ktls::CompatibleCiphers::new()
+        .await
+        .unwrap();
     for suite in all_suites() {
         assert!(cc.is_compatible(suite));
     }
@@ -79,7 +73,9 @@ async fn compatible_ciphers() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn compatible_ciphers_single_thread() {
-    let cc = ktls::CompatibleCiphers::new().await.unwrap();
+    let cc = ktls::CompatibleCiphers::new()
+        .await
+        .unwrap();
     for suite in all_suites() {
         assert!(cc.is_compatible(suite));
     }
@@ -135,7 +131,9 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
 
     let mut server_config =
         ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
-            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .with_protocol_versions(&[cipher_suite
+                .version
+                .as_supported_version()])
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
@@ -148,7 +146,9 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-    let ln = TcpListener::bind("[::]:0").await.unwrap();
+    let ln = TcpListener::bind("[::]:0")
+        .await
+        .unwrap();
     let addr = ln.local_addr().unwrap();
 
     let jh = tokio::spawn(
@@ -165,37 +165,57 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
             // the draining logic
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            let mut stream = ktls::config_ktls_server(stream).await.unwrap();
+            let mut stream = ktls::config_ktls_server(stream)
+                .await
+                .unwrap();
             debug!("Configured kTLS");
 
             debug!("Server reading data (1/5)");
             let mut buf = vec![0u8; PAYLOADS.client.len()];
-            stream.read_exact(&mut buf).await.unwrap();
+            stream
+                .read_exact(&mut buf)
+                .await
+                .unwrap();
             assert_eq!(buf, PAYLOADS.client);
 
             debug!("Server writing data (2/5)");
-            stream.write_all(&PAYLOADS.server).await.unwrap();
+            stream
+                .write_all(&PAYLOADS.server)
+                .await
+                .unwrap();
             stream.flush().await.unwrap();
 
             debug!("Server reading data (3/5)");
             let mut buf = vec![0u8; PAYLOADS.client.len()];
-            stream.read_exact(&mut buf).await.unwrap();
+            stream
+                .read_exact(&mut buf)
+                .await
+                .unwrap();
             assert_eq!(buf, PAYLOADS.client);
 
             debug!("Server writing data (4/5)");
-            stream.write_all(&PAYLOADS.server).await.unwrap();
+            stream
+                .write_all(&PAYLOADS.server)
+                .await
+                .unwrap();
             stream.flush().await.unwrap();
 
             match flavor {
                 ServerTestFlavor::ClientCloses => {
                     debug!("Server reading from closed session (5/5)");
                     assert!(
-                        stream.read_exact(&mut buf[..1]).await.is_err(),
+                        stream
+                            .read_exact(&mut buf[..1])
+                            .await
+                            .is_err(),
                         "Session still open?"
                     );
 
                     debug!("Server trying to write after the peer closed");
-                    let err = stream.write(&PAYLOADS.server).await.unwrap_err();
+                    let err = stream
+                        .write(&PAYLOADS.server)
+                        .await
+                        .unwrap_err();
                     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
                 }
                 ServerTestFlavor::ServerCloses => {
@@ -203,7 +223,10 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
                     stream.shutdown().await.unwrap();
 
                     debug!("Server trying to write after closing");
-                    let err = stream.write(&PAYLOADS.server).await.unwrap_err();
+                    let err = stream
+                        .write(&PAYLOADS.server)
+                        .await
+                        .unwrap_err();
                     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
                 }
             }
@@ -216,7 +239,9 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
     );
 
     let mut root_store = RootCertStore::empty();
-    root_store.add(ckey.cert.der().clone()).unwrap();
+    root_store
+        .add(ckey.cert.der().clone())
+        .unwrap();
 
     let client_config = ClientConfig::builder()
         .with_root_certificates(root_store)
@@ -231,23 +256,35 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
         .unwrap();
 
     debug!("Client writing data (1/5)");
-    stream.write_all(&PAYLOADS.client).await.unwrap();
+    stream
+        .write_all(&PAYLOADS.client)
+        .await
+        .unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     debug!("Client reading data (2/5)");
     let mut buf = vec![0u8; PAYLOADS.server.len()];
-    stream.read_exact(&mut buf).await.unwrap();
+    stream
+        .read_exact(&mut buf)
+        .await
+        .unwrap();
     assert_eq!(buf, PAYLOADS.server);
 
     debug!("Client writing data (3/5)");
-    stream.write_all(&PAYLOADS.client).await.unwrap();
+    stream
+        .write_all(&PAYLOADS.client)
+        .await
+        .unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     debug!("Client reading data (4/5)");
     let mut buf = vec![0u8; PAYLOADS.server.len()];
-    stream.read_exact(&mut buf).await.unwrap();
+    stream
+        .read_exact(&mut buf)
+        .await
+        .unwrap();
     assert_eq!(buf, PAYLOADS.server);
 
     match flavor {
@@ -256,12 +293,18 @@ async fn server_test_inner(cipher_suite: KtlsCipherSuite, flavor: ServerTestFlav
             stream.shutdown().await.unwrap();
 
             debug!("Client trying to write after closing");
-            stream.write_all(&PAYLOADS.client).await.unwrap_err();
+            stream
+                .write_all(&PAYLOADS.client)
+                .await
+                .unwrap_err();
         }
         ServerTestFlavor::ServerCloses => {
             debug!("Client reading from closed session (5/5)");
             assert!(
-                stream.read_exact(&mut buf[..1]).await.is_err(),
+                stream
+                    .read_exact(&mut buf[..1])
+                    .await
+                    .is_err(),
                 "Session still open?"
             );
         }
@@ -319,7 +362,9 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
 
     let mut server_config =
         ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
-            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .with_protocol_versions(&[cipher_suite
+                .version
+                .as_supported_version()])
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
@@ -332,7 +377,9 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
     // server_config.send_tls13_tickets = 0;
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-    let ln = TcpListener::bind("[::]:0").await.unwrap();
+    let ln = TcpListener::bind("[::]:0")
+        .await
+        .unwrap();
     let addr = ln.local_addr().unwrap();
 
     let jh = tokio::spawn(
@@ -345,15 +392,24 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
 
             debug!("Server reading data (1/5)");
             let mut buf = vec![0u8; PAYLOADS.client.len()];
-            stream.read_exact(&mut buf).await.unwrap();
+            stream
+                .read_exact(&mut buf)
+                .await
+                .unwrap();
             assert_eq!(buf, PAYLOADS.client);
 
             debug!("Server writing data (2/5)");
-            stream.write_all(&PAYLOADS.server).await.unwrap();
+            stream
+                .write_all(&PAYLOADS.server)
+                .await
+                .unwrap();
 
             debug!("Server reading data (3/5)");
             let mut buf = vec![0u8; PAYLOADS.client.len()];
-            stream.read_exact(&mut buf).await.unwrap();
+            stream
+                .read_exact(&mut buf)
+                .await
+                .unwrap();
             assert_eq!(buf, PAYLOADS.client);
 
             for _i in 0..3 {
@@ -362,13 +418,19 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
             }
 
             debug!("Server writing data (4/5)");
-            stream.write_all(&PAYLOADS.server).await.unwrap();
+            stream
+                .write_all(&PAYLOADS.server)
+                .await
+                .unwrap();
 
             debug!("Server sending close notify (5/5)");
             stream.shutdown().await.unwrap();
 
             debug!("Server trying to write after close notify");
-            stream.write_all(&PAYLOADS.server).await.unwrap_err();
+            stream
+                .write_all(&PAYLOADS.server)
+                .await
+                .unwrap_err();
 
             debug!("Server is happy with the exchange");
         }
@@ -376,7 +438,9 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
     );
 
     let mut root_store = RootCertStore::empty();
-    root_store.add(ckey.cert.der().clone()).unwrap();
+    root_store
+        .add(ckey.cert.der().clone())
+        .unwrap();
 
     let mut client_config = ClientConfig::builder()
         .with_root_certificates(root_store)
@@ -395,11 +459,16 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
         .await
         .unwrap();
 
-    let stream = ktls::config_ktls_client(stream).await.unwrap();
+    let stream = ktls::config_ktls_client(stream)
+        .await
+        .unwrap();
     let mut stream = SpyStream(stream, "client");
 
     debug!("Client writing data (1/5)");
-    stream.write_all(&PAYLOADS.client).await.unwrap();
+    stream
+        .write_all(&PAYLOADS.client)
+        .await
+        .unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
@@ -407,17 +476,26 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
 
     debug!("Client reading data (2/5)");
     let mut buf = vec![0u8; PAYLOADS.server.len()];
-    stream.read_exact(&mut buf).await.unwrap();
+    stream
+        .read_exact(&mut buf)
+        .await
+        .unwrap();
     assert_eq!(buf, PAYLOADS.server);
 
     debug!("Client writing data (3/5)");
-    stream.write_all(&PAYLOADS.client).await.unwrap();
+    stream
+        .write_all(&PAYLOADS.client)
+        .await
+        .unwrap();
     debug!("Flushing");
     stream.flush().await.unwrap();
 
     debug!("Client reading data (4/5)");
     let mut buf = vec![0u8; PAYLOADS.server.len()];
-    stream.read_exact(&mut buf).await.unwrap();
+    stream
+        .read_exact(&mut buf)
+        .await
+        .unwrap();
     assert_eq!(buf, PAYLOADS.server);
 
     let buf = match flavor {
@@ -431,7 +509,10 @@ async fn client_test_inner(cipher_suite: KtlsCipherSuite, flavor: ClientTestFlav
     assert!(stream.read_exact(buf).await.is_err(), "Session still open?");
 
     debug!("Client trying to write after the peer closed");
-    let err = stream.write(&PAYLOADS.client).await.unwrap_err();
+    let err = stream
+        .write(&PAYLOADS.client)
+        .await
+        .unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
 
     jh.await.unwrap();
@@ -573,7 +654,9 @@ async fn read_returns_eof_when_close_notify_reply_would_block() {
 
     let mut server_config =
         ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
-            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .with_protocol_versions(&[cipher_suite
+                .version
+                .as_supported_version()])
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
@@ -584,7 +667,9 @@ async fn read_returns_eof_when_close_notify_reply_would_block() {
     server_config.enable_secret_extraction = true;
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-    let ln = TcpListener::bind("[::]:0").await.unwrap();
+    let ln = TcpListener::bind("[::]:0")
+        .await
+        .unwrap();
     let addr = ln.local_addr().unwrap();
 
     let (buffer_full_tx, buffer_full_rx) = tokio::sync::oneshot::channel::<()>();
@@ -597,7 +682,9 @@ async fn read_returns_eof_when_close_notify_reply_would_block() {
             .unwrap();
         let stream = CorkStream::new(stream);
         let stream = acceptor.accept(stream).await.unwrap();
-        let mut stream = ktls::config_ktls_server(stream).await.unwrap();
+        let mut stream = ktls::config_ktls_server(stream)
+            .await
+            .unwrap();
 
         // 1. Fill the send buffer: the client never reads, so once a
         // write stops completing within the timeout, the buffer is full.
@@ -619,7 +706,9 @@ async fn read_returns_eof_when_close_notify_reply_would_block() {
     });
 
     let mut root_store = RootCertStore::empty();
-    root_store.add(ckey.cert.der().clone()).unwrap();
+    root_store
+        .add(ckey.cert.der().clone())
+        .unwrap();
     let client_config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
@@ -653,15 +742,28 @@ async fn key_update_fails_reads_with_clear_error() {
     let (mut server, mut client) = ktls_server_rustls_client(cipher_suite).await;
 
     // 1. Sanity round trip before the rekey.
-    client.write_all(b"hello").await.unwrap();
+    client
+        .write_all(b"hello")
+        .await
+        .unwrap();
     client.flush().await.unwrap();
     let mut buf = [0u8; 5];
-    server.read_exact(&mut buf).await.unwrap();
+    server
+        .read_exact(&mut buf)
+        .await
+        .unwrap();
     assert_eq!(&buf, b"hello");
 
     // 2. The client rekeys, then writes with the new keys.
-    client.get_mut().1.refresh_traffic_keys().unwrap();
-    client.write_all(b"rekeyed").await.unwrap();
+    client
+        .get_mut()
+        .1
+        .refresh_traffic_keys()
+        .unwrap();
+    client
+        .write_all(b"rekeyed")
+        .await
+        .unwrap();
     client.flush().await.unwrap();
 
     // 3. The server's next read must report the KeyUpdate clearly.
@@ -680,14 +782,25 @@ async fn missing_close_notify_is_unexpected_eof() {
     let (mut server, mut client) = ktls_server_rustls_client(cipher_suite).await;
 
     // 1. Sanity round trip.
-    client.write_all(b"hello").await.unwrap();
+    client
+        .write_all(b"hello")
+        .await
+        .unwrap();
     client.flush().await.unwrap();
     let mut buf = [0u8; 5];
-    server.read_exact(&mut buf).await.unwrap();
+    server
+        .read_exact(&mut buf)
+        .await
+        .unwrap();
     assert_eq!(&buf, b"hello");
 
     // 2. The client sends a bare TCP FIN, bypassing the TLS shutdown.
-    client.get_mut().0.shutdown().await.unwrap();
+    client
+        .get_mut()
+        .0
+        .shutdown()
+        .await
+        .unwrap();
 
     // 3. The server must report truncation, not end-of-stream.
     let err = server.read(&mut buf).await.unwrap_err();
@@ -705,7 +818,9 @@ async fn ktls_server_rustls_client(
 
     let mut server_config =
         ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
-            .with_protocol_versions(&[cipher_suite.version.as_supported_version()])
+            .with_protocol_versions(&[cipher_suite
+                .version
+                .as_supported_version()])
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
@@ -716,11 +831,15 @@ async fn ktls_server_rustls_client(
     server_config.enable_secret_extraction = true;
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-    let ln = TcpListener::bind("[::]:0").await.unwrap();
+    let ln = TcpListener::bind("[::]:0")
+        .await
+        .unwrap();
     let addr = ln.local_addr().unwrap();
 
     let mut root_store = RootCertStore::empty();
-    root_store.add(ckey.cert.der().clone()).unwrap();
+    root_store
+        .add(ckey.cert.der().clone())
+        .unwrap();
     let client_config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
@@ -730,7 +849,9 @@ async fn ktls_server_rustls_client(
         let (stream, _) = ln.accept().await.unwrap();
         let stream = CorkStream::new(stream);
         let stream = acceptor.accept(stream).await.unwrap();
-        ktls::config_ktls_server(stream).await.unwrap()
+        ktls::config_ktls_server(stream)
+            .await
+            .unwrap()
     };
     let client = async {
         let stream = TcpStream::connect(addr).await.unwrap();
