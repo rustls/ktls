@@ -4,7 +4,7 @@ use std::{io, task};
 use rustls::internal::msgs::codec::Codec;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::AsyncReadReady;
+use crate::{AsyncReadReady, AsyncWriteReady};
 
 enum State {
     ReadHeader { header_buf: [u8; 5], offset: usize },
@@ -173,6 +173,19 @@ where
 {
     fn poll_read_ready(&self, cx: &mut task::Context<'_>) -> task::Poll<io::Result<()>> {
         self.io.poll_read_ready(cx)
+    }
+}
+
+impl<IO> AsyncWriteReady for CorkStream<IO>
+where
+    IO: AsyncWriteReady,
+{
+    fn poll_write_ready(&self, cx: &mut task::Context<'_>) -> task::Poll<io::Result<()>> {
+        self.io.poll_write_ready(cx)
+    }
+
+    fn try_write_io<R>(&self, f: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
+        self.io.try_write_io(f)
     }
 }
 

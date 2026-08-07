@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 
-pub use crate::async_ready::AsyncReadReady;
+pub use crate::async_ready::{AsyncReadReady, AsyncWriteReady};
 pub use crate::cork_stream::CorkStream;
 pub use crate::ffi::CryptoInfo;
 use crate::ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
