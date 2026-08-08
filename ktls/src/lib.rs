@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 pub use crate::async_read_ready::AsyncReadReady;
 pub use crate::cork_stream::CorkStream;
 pub use crate::ffi::CryptoInfo;
-use crate::ffi::{KtlsCompatibilityError, setup_tls_info, setup_ulp};
+use crate::ffi::{setup_tls_info, setup_ulp, KtlsCompatibilityError};
 pub use crate::ktls_stream::KtlsStream;
 
 #[derive(Debug, Default)]

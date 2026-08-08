@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::task;
 
 use nix::errno::Errno;
-use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn, TlsGetRecordType, recvmsg};
+use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags, SockaddrIn, TlsGetRecordType};
 use num_enum::FromPrimitive;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -228,7 +228,10 @@ where
                         // https://www.rfc-editor.org/info/rfc9846/#appendix-B.3
                         const MSG_NEW_SESSION_TICKET: u8 = 4;
                         const MSG_KEY_UPDATE: u8 = 24;
-                        let message_type = r.iovs().next().and_then(|iov| iov.first());
+                        let message_type = r
+                            .iovs()
+                            .next()
+                            .and_then(|iov| iov.first());
                         match message_type {
                             Some(&MSG_KEY_UPDATE) => {
                                 // KeyUpdate is fatal: This crate cannot switch traffic

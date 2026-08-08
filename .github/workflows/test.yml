@@ -56,3 +56,35 @@ jobs:
       - name: Check library code with minimum supported Rust version
         run: |
           just check --lib --locked
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  format-unstable:
+    name: Format (unstable)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install rust nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - name: Check formatting (unstable)
+        run: cargo fmt --all -- --check --config-path .rustfmt.unstable.toml
+      - if: ${{ failure() }}
+        run: echo "Nightly formatting check failed. Please run \`cargo +nightly fmt-unstable\`"
