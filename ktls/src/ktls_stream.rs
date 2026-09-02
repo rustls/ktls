@@ -8,7 +8,8 @@ use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags, SockaddrIn, TlsGe
 use num_enum::FromPrimitive;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::AsyncReadReady;
+use crate::ffi::send_close_notify;
+use crate::{AsyncReadReady, AsyncWriteReady};
 
 // A wrapper around `IO` that sends a `close_notify` when shut down or dropped.
 pin_project_lite::pin_project! {
@@ -205,9 +206,7 @@ where
                                 tracing::trace!(?level, ?description, "got TLS alert");
                                 *this.read_closed = true;
                                 *this.write_closed = true;
-                                if let Err(e) =
-                                    crate::ffi::send_close_notify(this.inner.as_raw_fd())
-                                {
+                                if let Err(e) = send_close_notify(this.inner.as_raw_fd()) {
                                     // This can fail in case of a full send buffer (EAGAIN),
                                     // or a dead socket. Ignore the error, as replying with
                                     // close_notify is best-effort.
@@ -299,7 +298,7 @@ where
 
 impl<IO> AsyncWrite for KtlsStream<IO>
 where
-    IO: AsRawFd + AsyncWrite,
+    IO: AsRawFd + AsyncWrite + AsyncWriteReady,
 {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -323,12 +322,22 @@ where
     ) -> task::Poll<io::Result<()>> {
         let this = self.project();
 
-        if !*this.write_closed {
+        while !*this.write_closed {
             // they didn't hang up on us, we're nicely being asked to shut down,
             // let's send a close_notify (and not wait for them to send it back)
-            *this.write_closed = true;
-            if let Err(e) = crate::ffi::send_close_notify(this.inner.as_raw_fd()) {
-                return Err(e).into();
+            task::ready!(this.inner.poll_write_ready(cx))?;
+
+            let fd = this.inner.as_raw_fd();
+            let res = this
+                .inner
+                .try_write_io(|| send_close_notify(fd));
+            match res {
+                Ok(()) => *this.write_closed = true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(e) => {
+                    *this.write_closed = true;
+                    return Err(e).into();
+                }
             }
         }
 

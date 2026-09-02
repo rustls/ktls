@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{io, task};
 
-use ktls::{AsyncReadReady, CorkStream, KtlsCipherSuite, KtlsCipherType, KtlsVersion};
+use ktls::{
+    AsyncReadReady, AsyncWriteReady, CorkStream, KtlsCipherSuite, KtlsCipherType, KtlsVersion,
+};
 use lazy_static::lazy_static;
 use rcgen::generate_simple_self_signed;
 use rustls::client::Resumption;
@@ -563,6 +565,19 @@ where
     }
 }
 
+impl<IO> AsyncWriteReady for SpyStream<IO>
+where
+    IO: AsyncWriteReady,
+{
+    fn poll_write_ready(&self, cx: &mut task::Context<'_>) -> task::Poll<io::Result<()>> {
+        self.0.poll_write_ready(cx)
+    }
+
+    fn try_write_io<R>(&self, f: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
+        self.0.try_write_io(f)
+    }
+}
+
 impl<IO> AsyncWrite for SpyStream<IO>
 where
     IO: AsyncWrite,
@@ -861,4 +876,94 @@ async fn ktls_server_rustls_client(
             .unwrap()
     };
     tokio::join!(server, client)
+}
+
+#[tokio::test]
+async fn shutdown_retries_close_notify_when_send_buffer_full() {
+    let cipher_suite = KtlsCipherSuite {
+        version: KtlsVersion::TLS13,
+        typ: KtlsCipherType::AesGcm128,
+    };
+
+    let ckey = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+
+    let mut server_config =
+        ServerConfig::builder_with_provider(single_suite_provider(cipher_suite))
+            .with_protocol_versions(&[cipher_suite
+                .version
+                .as_supported_version()])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![ckey.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(ckey.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+    server_config.enable_secret_extraction = true;
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let ln = TcpListener::bind("[::]:0")
+        .await
+        .unwrap();
+    let addr = ln.local_addr().unwrap();
+
+    let mut root_store = RootCertStore::empty();
+    root_store
+        .add(ckey.cert.der().clone())
+        .unwrap();
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let tls_connector = TlsConnector::from(Arc::new(client_config));
+
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let jh = tokio::spawn(async move {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut stream = tls_connector
+            .connect("localhost".try_into().unwrap(), stream)
+            .await
+            .unwrap();
+
+        // 3. Drain everything
+        drain_rx.await.unwrap();
+        let mut sink = vec![0u8; 65536];
+        loop {
+            match stream.read(&mut sink).await.unwrap() {
+                // EOF signals the `close_notify` was delivered
+                0 => break,
+                _ => continue,
+            }
+        }
+    });
+
+    let (stream, _) = ln.accept().await.unwrap();
+    socket2::SockRef::from(&stream)
+        .set_send_buffer_size(4096)
+        .unwrap();
+    let stream = CorkStream::new(stream);
+    let stream = acceptor.accept(stream).await.unwrap();
+    let mut stream = ktls::config_ktls_server(stream)
+        .await
+        .unwrap();
+
+    // 1. Fill the send buffer (the client is not reading yet).
+    let chunk = vec![0u8; 65536];
+    while let Ok(res) = tokio::time::timeout(Duration::from_millis(250), stream.write(&chunk)).await
+    {
+        res.unwrap();
+    }
+
+    // 2. With no room for the alert, shutdown must stay pending, not fail.
+    let res = tokio::time::timeout(Duration::from_millis(250), stream.shutdown()).await;
+    assert!(
+        res.is_err(),
+        "shutdown must stay pending while the buffer is full, got {res:?}"
+    );
+
+    // 4. Signal client to start draining. The retried shutdown now completes.
+    drain_tx.send(()).unwrap();
+    stream.shutdown().await.unwrap();
+
+    jh.await.unwrap();
 }
